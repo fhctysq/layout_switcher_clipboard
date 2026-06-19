@@ -1,0 +1,33 @@
+name: Automated Compilation
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: mingw-w64-ucrt-x86_64-gcc
+
+    - name: Compile Resource and Executable
+      shell: msys2 {0}
+      run: |
+        windres resource.rc -o resource.o
+        g++ -Os -O2 -s -flto layout_switcher_clipboard.cpp resource.o -o layout_switcher_clipboard.exe -luser32 -lgdi32 -mwindows -luxtheme
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: layout_switcher_clipboard-compiled
+        path: layout_switcher_clipboard.exe
