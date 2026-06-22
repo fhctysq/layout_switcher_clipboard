@@ -51,7 +51,7 @@ bool ignoreClipboardUpdate = false;   // Запобіжник: якщо true, п
 // --- Елементи для малювання (кольори, шрифти) ---
 HBRUSH hDarkBrush = NULL; 
 HFONT hFont = NULL;       
-int g_ItemHeight = UI_ITEM_HEIGHT; 
+int g_ItemHeight = UI_ITEM_HEIGHT;
 
 // --- Бекапи та технічні змінні ---
 wchar_t* g_SysClipboardBackup = NULL; // Тимчасове сховище для справжнього буфера обміну ОС
@@ -383,26 +383,13 @@ bool EvictOldestToDisk() {
 void RemoveFromHistory(int index) {
     if (index < 0 || index >= historyCount) return;
     
-    // --- ПЕРЕВІРКА НА ЗОМБІ (Alt+V логіка) ---
-    // Якщо користувач видаляє запис, який також є останнім для Alt+C, ми очищуємо Alt+C
-    if (lastAltCCopy) {
-        bool isZombie = false;
-        if (!IsLargeFile(history[index])) {
-            if (lstrcmpW(history[index], lastAltCCopy) == 0) isZombie = true;
-        } else {
-            wchar_t* loaded = LoadLargeText(history[index]);
-            if (loaded) {
-                if (lstrcmpW(loaded, lastAltCCopy) == 0) isZombie = true;
-                HeapFree(hMemHeap, 0, loaded);
-            }
-        }
-        if (isZombie) {
-            HeapFree(hMemHeap, 0, lastAltCCopy);
-            lastAltCCopy = NULL; // Тепер Alt+V перейде на fallback (найновіший запис)
-        }
+    // перевірка зомбі (Alt+V логіка) ---
+    // якщо видаляємо текст скопійований через Alt+C, занулюємо lastAltCCopy,
+    // щоб пізніше не спробувати вставити "порожнечу"
+    if (history[index] == lastAltCCopy) {
+        lastAltCCopy = NULL;
     }
-    // -----------------------------------------
-
+    // якщо скопійований текст був гігантським і зберігався на диску, видаляємо фізичний файл
     if (IsLargeFile(history[index])) {
         const wchar_t* pipe = wcschr(history[index], L'|');
         if (pipe) {
@@ -415,17 +402,18 @@ void RemoveFromHistory(int index) {
         }
     }
     
-    HeapFree(hMemHeap, 0, history[index]);
+    HeapFree(hMemHeap, 0, history[index]); // звільняємо пам'ять, що текст її займав у купі
+    // зсуваємо нижні записи на одну позицію вгору, закриваючи дірку від видаленого елемента
     for (int i = index; i < historyCount - 1; ++i) history[i] = history[i + 1];
     historyCount--;
-    SaveHistory();
+    SaveHistory(); // синхронізуємо зміни з файлом на диску
 }
-
+// додаємо новий запис в історію
 void AddToHistory(const wchar_t* text) {
     size_t bytes = (lstrlenW(text) + 1) * sizeof(wchar_t);
     size_t cch = bytes / sizeof(wchar_t);
     wchar_t* newEntry = NULL;
-
+    // якщо текст дуже великий — одразу архівуємо в файл, бо робоча пам'ять жорстко обмежена 1 МБ
     if (bytes > LARGE_TEXT_THRESHOLD) {
         wchar_t placeholder[MAX_PATH + UI_PREVIEW_LENGTH + 50];
         if (SaveLargeText(text, placeholder)) {
@@ -448,15 +436,15 @@ void AddToHistory(const wchar_t* text) {
         }
         StringCchCopyW(newEntry, cch, text);
     }
-    if (!newEntry) return;
-
+    if (!newEntry) return; // аварійний вихід, якщо пам'ять так і не виділилась
+    // захист від спаму: ігноруємо текст, якщо він ідентичний останньому скопійованому
     if (historyCount > 0 && lstrcmpW(history[0], newEntry) == 0) {
         HeapFree(hMemHeap, 0, newEntry);
         return;
     }
-
+    // видаляємо найстаріший запис, якщо досягли максимуму
     if (historyCount == MAX_HISTORY_ITEMS) RemoveFromHistory(historyCount - 1); 
-
+    // додаємо новий запис нагору історії (індекс 0)
     for (int i = historyCount; i > 0; --i) history[i] = history[i - 1];
     history[0] = newEntry; 
     historyCount++;
@@ -499,7 +487,7 @@ void LoadHistory() {
 // ==========================================
 // --- СЕПАРАЦІЯ БУФЕРА ТА ОПЕРАЦІЇ ---
 // ==========================================
-// Робить бекап справжнього буфера обміну ОС перед нашими "хаками"
+// бекап справжнього буфера обміну, щоб технічні копіювання (Ctrl+C) не знищили дані користувача
 void BackupSysClipboard() {
     if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
     if (OpenClipboard(NULL)) {
@@ -517,7 +505,7 @@ void BackupSysClipboard() {
     }
 }
 
-// Відновлює справжній буфер обміну ОС після "хаків"
+// відновлюємо справжній буфер обміну ОС після роботи
 void RestoreSysClipboard() {
     if (OpenClipboard(NULL)) {
         EmptyClipboard();
@@ -532,23 +520,23 @@ void RestoreSysClipboard() {
             }
         }
         CloseClipboard();
-    }
+    } // очищуємо бекап коли не потрібен
     if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
 }
-
+// очищує чергу повідомлень ОС, щоб утиліта не реагувала на свої ж копіювання
 void ClearPendingClipboardUpdates() {
     MSG msg;
     while (PeekMessage(&msg, hMainWindow, WM_CLIPBOARDUPDATE, WM_CLIPBOARDUPDATE, PM_REMOVE)) {}
 }
 
 // Кастомне копіювання/вирізання (наприклад, через Alt+C). 
-// setAsAltC = false використовується для тихого фонового копіювання (Ctrl+A), щоб не затерти справжній Alt+C
+// etAsAltC вказує, чи потрібно запам'ятати цей текст для швидкої вставки через Alt+V
 void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) { 
-    ignoreClipboardUpdate = true; 
-    BackupSysClipboard();         
-
-    DWORD startSeq = GetClipboardSequenceNumber(); 
-    SendKeyCombo(VK_CONTROL, vkCode); 
+    ignoreClipboardUpdate = true; // кажемо обробнику ігнорувати наступну зміну буфера
+    BackupSysClipboard();
+    
+    DWORD startSeq = GetClipboardSequenceNumber();
+    SendKeyCombo(VK_CONTROL, vkCode); // імітуємо Ctrl+C або Ctrl+X
     
     // Чекаємо, поки програма-донор віддасть текст у буфер обміну
     bool updated = false;
@@ -563,14 +551,9 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
         if (hData) {
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pText) {
-                AddToHistory(pText); 
-                
-                // Зберігаємо як запис для Alt+V ТІЛЬКИ якщо це не фонове Ctrl+A
-                if (setAsAltC) {
-                    if (lastAltCCopy) HeapFree(hMemHeap, 0, lastAltCCopy);
-                    size_t cch = lstrlenW(pText) + 1;
-                    lastAltCCopy = (wchar_t*)HeapAlloc(hMemHeap, 0, cch * sizeof(wchar_t));
-                    if (lastAltCCopy) StringCchCopyW(lastAltCCopy, cch, pText);
+                AddToHistory(pText); // зберігаємо текст в історію (він стане history[0])
+                if (setAsAltC && historyCount > 0) {
+                    lastAltCCopy = history[0]; // маркуємо його для Alt+V
                 }
 
                 GlobalUnlock(hData);
@@ -579,7 +562,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
         CloseClipboard();
     }
 
-    RestoreSysClipboard(); 
+    RestoreSysClipboard(); // відновлюємо початковий буфер
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
 }
@@ -603,7 +586,7 @@ void PasteLastAltC() {
         }
         CloseClipboard();
         
-        SendKeyCombo(VK_CONTROL, 0x56); // Імітація натискання Ctrl+V
+        SendKeyCombo(VK_CONTROL, 0x56); // імітація натискання Ctrl+V
         Sleep(50); 
     }
 
@@ -612,11 +595,11 @@ void PasteLastAltC() {
     ignoreClipboardUpdate = false;
 }
 
-// Вставка конкретного тексту з історії (вибір через віконце)
+// вставка конкретного тексту з історії (вибір через віконце)
 void PasteFromHistory(int index) {
     if (index < 0 || index >= historyCount) return;
     
-    ShowWindow(hMainWindow, SW_HIDE); 
+    ShowWindow(hMainWindow, SW_HIDE); // ховаємо віконце
     ignoreClipboardUpdate = true; 
     BackupSysClipboard();
 
@@ -655,7 +638,7 @@ void PasteFromHistory(int index) {
     }
 }
 
-// Головна "магія": зміна розкладки, регістру або закреслення тексту прямо на льоту
+// зміна розкладки, регістру або закреслення тексту прямо на льоту
 void TransformClipboardText(TransformMode mode) {
     ignoreClipboardUpdate = true; 
     BackupSysClipboard();
