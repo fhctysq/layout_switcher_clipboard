@@ -11,7 +11,7 @@
 #include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
 #include <shellapi.h> // для роботи з піктограмою в системному лотку (треї)
 
-// =|=|= візуальні налаштування інтерфесу =|=|=
+// =|=|= візуальні налаштування інтерфейсу =|=|=
 #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
 #define UI_WIN_HEIGHT 704       // висота головного вікна
 #define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
@@ -79,6 +79,7 @@ ClipEntry pinnedBuffer[256] = { 0 };   // Масив для закріплени
 // лічильники з автообертанням (автоматично переходять 255 -> 0)
 uint8_t unpinnedHead = 255; // починаємо з 255, щоб перше додавання (++head) записало в 0
 uint8_t pinnedHead = 255;
+int firstPinnedListIdx = -1; // зберігає позицію першого закріпленого запису в UI для швидкого стрибка
 
 HANDLE hMemHeap = NULL;               // виділена пам'ять. оскільки масиви тепер статичні, Heap потрібен лише для тимчасових маніпуляцій
 // wchar_t* history[MAX_HISTORY_ITEMS];  // масив, що зберігає скопійовані тексти
@@ -870,39 +871,55 @@ cleanup:
     ignoreClipboardUpdate = false;
 }
 
-// =|=|= ІНТЕРФЕЙС ТА МАЛЮВАННЯ (ГРАФІКА) =|=|=
-// оновлює список текстів у вікні UI, відображаючи тільки активні записи
+// =|=|= інтерфейс та графіка =|=|=
+// допоміжна функція: готує текст для відображення в меню, очищуючи його від переносів рядків (\n -> _)
+void FormatPreviewForUI(const wchar_t* source, wchar_t* dest) {
+    int j = 0;
+    for (int k = 0; source[k] != L'\0' && j < UI_PREVIEW_LENGTH; k++) {
+        if (source[k] == L'\r') continue; // ігноруємо переміщення курсора на початок поточного рядка 
+        if (source[k] == L'\n') { dest[j++] = L' '; continue; }  // замінюємо переноси на пробіли
+        dest[j++] = source[k];
+    }
+    if (lstrlenW(source) > UI_PREVIEW_LENGTH && j <= UI_PREVIEW_LENGTH) {
+        StringCchCopyW(dest + j, (UI_PREVIEW_LENGTH + 5) - j, L"..."); // якщо текст більший ліміту — додаємо три крапки
+    } else {
+        dest[j] = L'\0';
+    }
+}
+// оновлює список текстів у вікні UI, відображаючи тільки активні записи з урахуванням Pinned і Unpinned масивів
 void UpdateListBox() {
     SendMessage(hListBox, LB_RESETCONTENT, 0, 0); 
-    wchar_t display[UI_PREVIEW_LENGTH + 5]; 
-    
-    for (int i = 0; i < 256; ++i) { // ітеруємо по кільцевому буферу на 256 елементів
-        ClipEntry& entry = unpinnedBuffer[i];
+    wchar_t display[UI_PREVIEW_LENGTH + 5];
+    firstPinnedListIdx = -1; // скидаємо перед перерахунком
+
+    // спершу виводимо звичайні (Unpinned) записи від найновішого до найстарішого
+    for (int i = 0; i < 256; i++) { // ітеруємо по буферу
+        uint8_t realIdx = (unpinnedHead - i) & 255;
+        ClipEntry& entry = unpinnedBuffer[realIdx];
+
+        if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
+        FormatPreviewForUI(entry.text, display);
+        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)display);
         
-        // якщо комірка порожня або затомбстонена (кошик) — просто пропускаємо її
-        if (!(entry.dataflags & DataFlags::Used)) continue;
-        // визначаємо, звідки брати текст для прев'ю залежно від прапорців типу
-        const wchar_t* textPtr = (entry.textflags & TextFlags::File) ? entry.fileData.preview : entry.text;
-        // формуємо рядок прев'ю, очищуючи його від переносів рядків (\n -> _)
-        int j = 0;
-        for (int k = 0; textPtr[k] != L'\0' && j < UI_PREVIEW_LENGTH; k++) {
-            if (textPtr[k] == L'\r') continue; // ігноруємо переміщення курсора на початок поточного рядка 
-            if (textPtr[k] == L'\n') { display[j++] = L'_'; continue; } // замінюємо переноси на підкреслення
-            display[j++] = textPtr[k];
-        }
+        SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
+    }
+    
+    for (int i = 255; i >= 0; i--) { // ітеруємо по буферу
+        uint8_t realIdx = (pinnedHead - i) & 255;
+        ClipEntry& entry = pinnedBuffer[realIdx];
+        
+        if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
+        FormatPreviewForUI(entry.text, display);
 
-        // Якщо оригінальний текст довший за ліміт екрану — додаємо три крапки (...)
-        if (entry.textLength > UI_PREVIEW_LENGTH && j <= UI_PREVIEW_LENGTH) { 
-            StringCchCopyW(display + j, (UI_PREVIEW_LENGTH + 5) - j, L"..."); 
-            j += 3; 
-        }
-        display[j] = L'\0';
+        wchar_t pinnedDisplay[UI_PREVIEW_LENGTH + 10];
+        StringCchPrintfW(pinnedDisplay, UI_PREVIEW_LENGTH + 10, L"📌 %s", display);
 
-        // Додаємо очищений рядок у ListBox. 
-        // ВАЖЛИВО: зберігаємо реальний індекс кільцевого буфера всередині метаданих елемента списку (ItemData)
-        int pos = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)display); 
-        if (pos != LB_ERR) {
-            SendMessage(hListBox, LB_SETITEMDATA, pos, (LPARAM)i);
+        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)pinnedDisplay);
+        
+        SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (1 << 8) | realIdx); // маска координати: 1 = Pinned
+
+        if (firstPinnedListIdx == -1) {  // запам'ятовуємо, де в переліку почався блок запінених
+            firstPinnedListIdx = static_cast<int>(listItemIdx);
         }
     }
 }
