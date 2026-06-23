@@ -12,18 +12,18 @@
 #include <shellapi.h> // для роботи з піктограмою в системному лотку (треї)
 
 // =|=|= візуальні налаштування інтерфесу =|=|=
-#define UI_WIN_WIDTH 560        // ширина головного вікна-меню
+#define UI_WIN_WIDTH 560        // ширина головного вікна буфера
 #define UI_WIN_HEIGHT 704       // висота головного вікна
-#define UI_ITEM_HEIGHT 90       // Висота однієї "картки" з текстом у списку
-#define UI_ITEM_GAP 8           // Відстань між картками
-#define UI_CORNER_RADIUS 18     // Наскільки круглими будуть кути вікна та карток
-#define UI_PREVIEW_LENGTH 168   // Скільки перших символів тексту показувати у прев'ю
-#define UI_HEADER_HEIGHT 32     // Висота верхньої "шапки" (за яку можна тягати вікно)
-#define UI_BOTTOM_HEIGHT 32     // Висота нижньої смужки
+#define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
+#define UI_ITEM_GAP 8           // відступ між картками
+#define UI_CORNER_RADIUS 18     // радіус заокруглення кутів вікна та карток
+#define UI_PREVIEW_LENGTH 168   // скільки символів початку тексту показувати у прев'ю
+#define UI_HEADER_HEIGHT 32     // висота верхньої "шапки" (за яку можна тягати вікно)
+#define UI_BOTTOM_HEIGHT 32     // висота нижньої смужки для перетягування
 
 // =|=|= налаштування трею та іконки =|=|=
-#define WM_TRAYICON (WM_APP + 2) // Кастомне повідомлення для обробки кліків у треї
-#define IDI_APPICON 101          // ID іконки в ресурсах (.rc файл)
+#define WM_TRAYICON (WM_APP + 2) // кастомне повідомлення для обробки кліків у треї
+#define IDI_APPICON 101          // id іконки в ресурсах (.rc файл)
 
 // =|=|= налаштування пам'яті та безпеки =|=|=
 #define LARGE_TEXT_THRESHOLD (16 * 1024) // якщо скопіювали більше 16 КБ за раз — скидаємо у файл
@@ -324,7 +324,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 //     return false;
 // }
 
-// // завантажує і розшифровує великий текст із файлу, якщо користувач вирішив його вставити
+// // завантажує і розшифровує великий текст із файлу, якщо потрібно вставити
 // wchar_t* LoadLargeText(const wchar_t* placeholder) {
 //     const wchar_t* pipe = wcschr(placeholder, L'|');
 //     if (!pipe) return NULL;
@@ -663,7 +663,7 @@ void ClearPendingClipboardUpdates() {
 }
 
 // кастомне копіювання/вирізання (наприклад, через Alt+C). 
-// etAsAltC вказує, чи потрібно запам'ятати цей текст для швидкої вставки через Alt+V
+// setAsAltC вказує, чи потрібно запам'ятати цей текст для швидкої вставки через Alt+V
 void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) { 
     ignoreClipboardUpdate = true; // кажемо обробнику ігнорувати наступну зміну буфера
     BackupSysClipboard();
@@ -671,7 +671,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
     DWORD startSeq = GetClipboardSequenceNumber();
     SendKeyCombo(VK_CONTROL, vkCode); // імітуємо Ctrl+C або Ctrl+X
     
-    // Чекаємо, поки програма-донор віддасть текст у буфер обміну
+    // чекаємо, поки програма-донор віддасть текст у буфер обміну
     bool updated = false;
     for (int i = 0; i < 16; ++i) {
         Sleep(20);
@@ -684,9 +684,10 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
         if (hData) {
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pText) {
-                AddToHistory(pText); // зберігаємо текст в історію (він стане history[0])
-                if (setAsAltC && historyCount > 0) {
-                    lastAltCCopy = history[0]; // маркуємо його для Alt+V
+                AddToHistory(pText); // зберігаємо текст в історію (він стане на позицію unpinnedHead)
+                if (setAsAltC) {
+                    lastAltCIndex = unpinnedHead; // запам'ятовуємо індекс картки кільцевого буфера для Alt+V
+                    lastAltCIsPinned = false;
                 }
 
                 GlobalUnlock(hData);
@@ -702,8 +703,12 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
 
 // вставка останнього скопійованого через Alt+C тексту (або фолбек)
 void PasteLastAltC() { 
-    if (!lastAltCCopy) return;
+    if (lastAltCIndex == -1) return; // нема AltC
     
+    // ледаче завантаження тексту під потребу вставки
+    wchar_t* textToPaste = LoadTextByRealIndex(static_cast<uint8_t>(lastAltCIndex), lastAltCIsPinned);
+    if (!textToPaste) return;
+
     ignoreClipboardUpdate = true;
     BackupSysClipboard(); 
 
@@ -722,12 +727,11 @@ void PasteLastAltC() {
         SendKeyCombo(VK_CONTROL, 0x56); // імітація натискання Ctrl+V
         Sleep(50); 
     }
-
+    HeapFree(GetProcessHeap(), 0, textToPaste); // чистимо оперативку після того, як ОС забрала текст
     RestoreSysClipboard(); 
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
 }
-
 // вставка конкретного тексту з історії (вибір через віконце)
 void PasteFromHistory(int index) {
     if (index < 0 || index >= historyCount) return;
