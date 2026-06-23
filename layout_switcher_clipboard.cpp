@@ -672,9 +672,8 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
     DWORD startSeq = GetClipboardSequenceNumber();
     SendKeyCombo(VK_CONTROL, vkCode); // імітуємо Ctrl+C або Ctrl+X
     
-    // чекаємо, поки програма-донор віддасть текст у буфер обміну
     bool updated = false;
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < 16; ++i) { // чекаємо, поки програма-донор віддасть текст у буфер обміну
         Sleep(20);
         if (GetClipboardSequenceNumber() != startSeq) { updated = true; break; }
     }
@@ -685,12 +684,11 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
         if (hData) {
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pText) {
-                AddToHistory(pText); // зберігаємо текст в історію (він стане на позицію unpinnedHead)
+                AddToHistory(pText, setAsAltC ? DataFlags::CtrlC : 0);// зберігаємо текст в історію (він стане на позицію unpinnedHead)
                 if (setAsAltC) {
                     lastAltCIndex = unpinnedHead; // запам'ятовуємо індекс картки кільцевого буфера для Alt+V
                     lastAltCIsPinned = false;
                 }
-
                 GlobalUnlock(hData);
             }
         }
@@ -713,13 +711,13 @@ void PasteLastAltC() {
     ignoreClipboardUpdate = true;
     BackupSysClipboard(); 
 
-    if (OpenClipboard(NULL)) {
+    if (textToPaste && OpenClipboard(NULL)) {
         EmptyClipboard();
-        size_t cch = lstrlenW(lastAltCCopy) + 1;
+        size_t cch = lstrlenW(textToPaste) + 1;
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
         if (hData) {
             wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
-            StringCchCopyW(pDest, cch, lastAltCCopy);
+            StringCchCopyW(pDest, cch, textToPaste);
             GlobalUnlock(hData);
             SetClipboardData(CF_UNICODETEXT, hData);
         }
@@ -728,7 +726,7 @@ void PasteLastAltC() {
         SendKeyCombo(VK_CONTROL, 0x56); // імітація натискання Ctrl+V
         Sleep(50); 
     }
-    HeapFree(GetProcessHeap(), 0, textToPaste); // чистимо оперативку після того, як ОС забрала текст
+    if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste); // чистимо оперативку після того, як ОС забрала текст
     RestoreSysClipboard(); 
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
@@ -903,8 +901,7 @@ void UpdateListBox() {
         
         SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
     }
-    
-    for (int i = 255; i >= 0; i--) { // ітеруємо по буферу
+    for (int i = 255; i >= 0; i--) { // ітеруємо по буферу закріплені (Pinned) записи
         uint8_t realIdx = (pinnedHead - i) & 255;
         ClipEntry& entry = pinnedBuffer[realIdx];
         
