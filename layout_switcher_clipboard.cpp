@@ -174,6 +174,9 @@ void XorBuffer(BYTE* buffer, DWORD size) {
 }
 
 // =|=|= симуляція натискань =|=|=
+// випереджаюче оголошення відміни фокусування меню після натискання Alt
+void CancelWindowsMenuFocus();
+
 // функція змушує систему думати, що ми натиснули комбінацію (напр. Ctrl+C)
 void SendKeyCombo(WORD modifier, WORD key) {
     INPUT inputs[16] = {}; 
