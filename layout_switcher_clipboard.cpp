@@ -751,38 +751,37 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
 // =|=|= сепарація системного буфера і кастомного =|=|=
 // бекап справжнього буфера обміну, щоб технічні копіювання (Ctrl+C) не знищили дані користувача
 void BackupSysClipboard() {
-    if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
-    if (OpenClipboard(NULL)) {
+    if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }  // про всяк скидаємо старий бекап
+    if (OpenClipboard(NULL)) {  // відкриваємо системний буфер обміну (NULL - прив'язка до поточного потоку)
         HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-        if (hData) {
-            wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
-            if (pText) {
-                size_t cch = lstrlenW(pText) + 1;
-                g_SysClipboardBackup = (wchar_t*)HeapAlloc(hMemHeap, 0, cch * sizeof(wchar_t));
-                if (g_SysClipboardBackup) StringCchCopyW(g_SysClipboardBackup, cch, pText);
-                GlobalUnlock(hData);
+        if (hData) {  // якщо буфер не порожній і містить саме текст
+            wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));  // блокуємо мобільний блок пам'яті
+            if (pText) {  // перевіряємо вказівник
+                size_t cch = lstrlenW(pText) + 1; // рахуємо символи
+                g_SysClipboardBackup = (wchar_t*)HeapAlloc(hMemHeap, 0, cch * sizeof(wchar_t));  // виділяємо пам'ять
+                if (g_SysClipboardBackup) StringCchCopyW(g_SysClipboardBackup, cch, pText);  // копіюємо текст в локальну змінну
+                GlobalUnlock(hData);  // знімаємо блокування
             }
         }
-        CloseClipboard();
+        CloseClipboard();  // закриваємо сесію
     }
 }
-
 // відновлюємо системний буфер обміну після роботи
 void RestoreSysClipboard() {
-    if (OpenClipboard(NULL)) {
-        EmptyClipboard();
+    if (OpenClipboard(NULL)) {  // відкриваємо системний буфер
+        EmptyClipboard();  // очищуємо його (тепер наше вікно власник буфера)
         if (g_SysClipboardBackup) {
-            size_t bytes = (lstrlenW(g_SysClipboardBackup) + 1) * sizeof(wchar_t);
-            HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);  // для системи потрібен GlobalAlloc
+            size_t bytes = (lstrlenW(g_SysClipboardBackup) + 1) * sizeof(wchar_t); // обчислюємо розмір бекапу
+            HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);  // для системи пам'ять буфера має бути виділена GlobalAlloc
             if (hData) {
                 wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
-                StringCchCopyW(pDest, bytes / sizeof(wchar_t), g_SysClipboardBackup);
-                GlobalUnlock(hData);
+                StringCchCopyW(pDest, bytes / sizeof(wchar_t), g_SysClipboardBackup);  // записуємо збережений раніше буфер
+                GlobalUnlock(hData);  // знімаємо блокування
                 SetClipboardData(CF_UNICODETEXT, hData);
             }
         }
-        CloseClipboard();
-    } // очищуємо бекап коли не потрібен
+        CloseClipboard();  // закриваємо сесію
+    } // віддали текст системі, локальний бекап більше не потрібен, очищуємо
     if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
 }
 // очищує чергу повідомлень ОС, щоб утиліта не реагувала на свої ж копіювання
@@ -961,6 +960,9 @@ void TransformClipboardText(TransformMode mode) {
                 if (hNewData) {  // якщо ОС успішно виділила пам'ять
                     wchar_t* pNewText = static_cast<wchar_t*>(GlobalLock(hNewData));  // фіксуємо новий блок під запис
                     bool changed = false;  // перевіряємо, чи змінився хоч один символ
+
+                    int toUkrCount = 0; // лічильник символів англ -> укр
+                    int toEngCount = 0; // лічильник символів укр -> англ
 
                     if (mode == TransformMode::StrikeSlanted || mode == TransformMode::StrikeStraight) {      // закреслення тексту
                         wchar_t strikeChar = (mode == TransformMode::StrikeSlanted) ? L'\x0337' : L'\x0336';  // обираємо Юнікод-код скісної або прямої риски
