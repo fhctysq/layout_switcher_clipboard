@@ -82,10 +82,6 @@ uint8_t unpinnedHead = 255; // починаємо з 255, щоб перше до
 uint8_t pinnedHead = 255;
 int firstPinnedListIdx = -1; // зберігає позицію першого закріпленого запису в UI для швидкого стрибка
 
-HANDLE hMemHeap = NULL;               // виділена пам'ять. оскільки масиви тепер статичні, Heap потрібен лише для тимчасових маніпуляцій
-// wchar_t* history[MAX_HISTORY_ITEMS];  // масив, що зберігає скопійовані тексти
-// 
-
 HWND hMainWindow = NULL;              // головне вікно програми
 HWND hListBox = NULL;                 // елемент переліку-історії UI
 
@@ -218,6 +214,11 @@ void SendKeyCombo(WORD modifier, WORD key) {
     }
     
     SendInput(c, inputs, sizeof(INPUT)); 
+
+    if (lAltHeld) {    // запобігаємо активації головного меню вікна (Файл, Правка і т.д.) через утримання Alt
+        Sleep(10);
+        CancelWindowsMenuFocus();
+    }
 }
 
 // =|=|= допоміжні функції для роботи з диском =|=|=
@@ -565,13 +566,13 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 //     HANDLE hFile = CreateFileW(filepath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 //     if (hFile != INVALID_HANDLE_VALUE) {
 //         DWORD bytesSize = lstrlenW(text) * sizeof(wchar_t);
-//         BYTE* encBuffer = (BYTE*)HeapAlloc(hMemHeap, 0, bytesSize);
+//         BYTE* encBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, bytesSize);
 //         if (encBuffer) {
 //             memcpy(encBuffer, text, bytesSize);
 //             XorBuffer(encBuffer, bytesSize); 
 //             DWORD written;
 //             WriteFile(hFile, encBuffer, bytesSize, &written, NULL);
-//             HeapFree(hMemHeap, 0, encBuffer);
+//             HeapFree(GetProcessHeap(), 0, encBuffer);
 //         }
 //         CloseHandle(hFile);
 
@@ -601,7 +602,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 //     HANDLE hFile = CreateFileW(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 //     if (hFile != INVALID_HANDLE_VALUE) {
 //         DWORD size = GetFileSize(hFile, NULL);
-//         wchar_t* text = (wchar_t*)HeapAlloc(hMemHeap, 0, size + sizeof(wchar_t));
+//         wchar_t* text = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, size + sizeof(wchar_t));
 //         if (text) {
 //             DWORD read;
 //             ReadFile(hFile, text, size, &read, NULL);
@@ -613,15 +614,41 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 //         CloseHandle(hFile);
 //     }
     
-//     wchar_t* fallback = (wchar_t*)HeapAlloc(hMemHeap, 0, 128 * sizeof(wchar_t));
+//     wchar_t* fallback = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, 128 * sizeof(wchar_t));
 //     if (fallback) StringCchCopyW(fallback, 128, L"[ПОМИЛКА] Файл з великим текстом не знайдено.");
 //     return fallback;
 // }
 
-// функція генерує компактне ім'я для відокремлених файлів (понад 16 КБ)
-void GenerateLargeFileName(wchar_t* outName) {
-    static int counter = 0;
-    StringCchPrintfW(outName, 32, L"item_%u_%d.bin", GetTickCount(), ++counter);
+// функція генерує компактне ім'я для відокремлених файлів - понад 16 КБ - (формат: РРММДД_ГГХХСС_текст.bin)
+void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
+    SYSTEMTIME st;
+    GetLocalTime(&st); // отримуємо поточний локальний час системи
+    
+    // створюємо короткий префікс часу: РРММДД_ГГХХСС (st.wYear % 100 забирає лише останні 2 цифри року)
+    wchar_t timeStr[16];
+    StringCchPrintfW(timeStr, 16, L"%02d%02d%02d_%02d%02d%02d", st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    
+    // витягаємо безпечні символи тексту (до 17 символів)
+    wchar_t cleanText[19] = {0}; // 17 символів + можливе фінальне підкреслення + нуль
+    int j = 0;
+    for (int i = 0; sourceText[i] != L'\0' && j < 17; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
+        wchar_t c = sourceText[i];
+        if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { // замінюємо всі переноси та пробіли на підкреслення
+            if (j > 0 && cleanText[j-1] != L'_') cleanText[j++] = L'_';
+            continue;
+        }
+        if (wcschr(L"\\/:*?\"<>|", c) == NULL) { // якщо символ не заборонений файловою системою Windows
+            cleanText[j++] = c; // копіюємо його в ім'я файлу
+        }
+    }
+    if (j > 0 && cleanText[j-1] == L'_') cleanText[j-1] = L'\0'; // прибираємо підкреслення на кінці, якщо воно там залишилось
+
+    // збираємо фінальне ім'я у буфер картки (максимум 31 символ + нуль-термінатор)
+    if (j > 0) {
+        StringCchPrintfW(outName, 32, L"%s_%s.bin", timeStr, cleanText); // якщо текст наявний: 260524_235959_MyText.bin
+    } else {
+        StringCchPrintfW(outName, 32, L"%s_file.bin", timeStr); // якщо тексту немає взагалі: 260524_235959_file.bin
+    }
 }
 
 // додаємо новий запис в історію в кільцевий буфер RAM
@@ -664,7 +691,7 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     else {
         entry.textflags |= TextFlags::File;
         wcsncpy_s(entry.fileData.preview, 988, text, _TRUNCATE);
-        GenerateLargeFileName(entry.fileData.fileName);
+        GenerateLargeFileName(entry.fileData.fileName, text);   // створюємо назву файлу
         CreateDirectoryW(L"ClipboardData", NULL);
     }
 
@@ -756,14 +783,14 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
 // =|=|= сепарація системного буфера і кастомного =|=|=
 // бекап справжнього буфера обміну, щоб технічні копіювання (Ctrl+C) не знищили дані користувача
 void BackupSysClipboard() {
-    if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }  // про всяк скидаємо старий бекап
+    if (g_SysClipboardBackup) { HeapFree(GetProcessHeap(), 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }  // про всяк скидаємо старий бекап
     if (OpenClipboard(NULL)) {  // відкриваємо системний буфер обміну (NULL - прив'язка до поточного потоку)
         HANDLE hData = GetClipboardData(CF_UNICODETEXT);
         if (hData) {  // якщо буфер не порожній і містить саме текст
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));  // блокуємо мобільний блок пам'яті
             if (pText) {  // перевіряємо вказівник
                 size_t cch = lstrlenW(pText) + 1; // рахуємо символи
-                g_SysClipboardBackup = (wchar_t*)HeapAlloc(hMemHeap, 0, cch * sizeof(wchar_t));  // виділяємо пам'ять
+                g_SysClipboardBackup = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, cch * sizeof(wchar_t));  // виділяємо пам'ять
                 if (g_SysClipboardBackup) StringCchCopyW(g_SysClipboardBackup, cch, pText);  // копіюємо текст в локальну змінну
                 GlobalUnlock(hData);  // знімаємо блокування
             }
@@ -787,7 +814,7 @@ void RestoreSysClipboard() {
         }
         CloseClipboard();  // закриваємо сесію
     } // віддали текст системі, локальний бекап більше не потрібен, очищуємо
-    if (g_SysClipboardBackup) { HeapFree(hMemHeap, 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
+    if (g_SysClipboardBackup) { HeapFree(GetProcessHeap(), 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
 }
 // очищує чергу повідомлень ОС, щоб утиліта не реагувала на свої ж копіювання
 void ClearPendingClipboardUpdates() {
@@ -835,7 +862,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                     } else {
                         entry.textflags = TextFlags::File;
                         wcsncpy_s(entry.fileData.preview, 988, pText, _TRUNCATE);
-                        GenerateLargeFileName(entry.fileData.fileName);
+                        GenerateLargeFileName(entry.fileData.fileName, pText);
                         CreateDirectoryW(L"ClipboardData", NULL);
                     }
                     SaveBlockToDisk(pinnedHead, true, pText);
@@ -904,7 +931,9 @@ void PasteFromHistory(int index) {
     bool isPinned = (itemData >> 8) & 1;
     uint8_t realIdx = itemData & 0xFF;
     
-    ShowWindow(hMainWindow, SW_HIDE); // ховаємо віконце
+    if (!((GetAsyncKeyState(VK_LMENU) & 0x8000) || (GetAsyncKeyState(VK_RMENU) & 0x8000))) {
+        ShowWindow(hMainWindow, SW_HIDE);   // ховаємо віконце лише якщо користувач не утримує клавішу Alt
+    }
     ignoreClipboardUpdate = true; 
     BackupSysClipboard();
 
@@ -1317,17 +1346,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DrawTextW(hdc, text, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
 
             RECT btnRect;  // малюємо кнопку піна (понад тексту, у правому нижньому кутку)
-            btnRect.right = cardRect.right - 10;          // правий відступ від краю картки
-            btnRect.left = btnRect.right - 32;            // ширина кнопки: 32px
-            btnRect.bottom = cardRect.bottom - 10;        // відступ від низу картки
-            btnRect.top = btnRect.bottom - 32;            // висота кнопки: 32px
+            btnRect.right = cardRect.right - 8;          // правий відступ від краю картки
+            btnRect.left = btnRect.right - 36;            // ширина кнопки: 32px
+            btnRect.bottom = cardRect.bottom - 8;        // відступ від низу картки
+            btnRect.top = btnRect.bottom - 36;            // висота кнопки: 32px
             
             // малюємо фон самої кнопки (яскравий, якщо закріплено)
             HBRUSH btnBrush = CreateSolidBrush(RGB(50, 50, 55));
             HPEN btnPen = CreatePen(PS_SOLID, 1, RGB(80, 80, 85));
             oldBrush = SelectObject(hdc, btnBrush);
             oldPen = SelectObject(hdc, btnPen);
-            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 12, 12);  // заокруглення 12px
+            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 14, 14);  // заокруглення 14px
             SelectObject(hdc, oldBrush); SelectObject(hdc, oldPen);
             DeleteObject(btnBrush); DeleteObject(btnPen);
             
@@ -1501,7 +1530,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY: 
             ManageTrayIcon(hwnd, NIM_DELETE); // видаляємо іконку з трею при закритті
             RemoveClipboardFormatListener(hwnd); 
-            HeapDestroy(hMemHeap); 
             PostQuitMessage(0);
             break;
 
@@ -1526,12 +1554,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     InitMaps(); 
-
-    hMemHeap = HeapCreate(0, 0, 0);
-    if (!hMemHeap) {
-        MessageBoxW(NULL, L"Помилка: Не вдалося виділити пам'ять", L"Критична помилка", MB_ICONERROR);
-        return 1;
-    } 
     
     LoadHistory(); 
 
