@@ -1,7 +1,7 @@
 #define UNICODE
 #define _UNICODE
 
-// кажемо Windows використовувати сучасний дизайн для списку і кнопок (візуальний стиль)
+// кажемо Windows використовувати сучасний візуальний стиль (для віконця і кнопок)
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "uxtheme.lib")
 
@@ -10,6 +10,7 @@
 #include <uxtheme.h> // для доступу до системної теми
 #include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
 #include <shellapi.h> // для роботи з піктограмою в системному лотку (треї)
+#include <cstdint> // для uint
 
 // =|=|= візуальні налаштування інтерфейсу =|=|=
 #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
@@ -405,54 +406,6 @@ LARGE_INTEGER CalculateOffset(uint8_t index, bool isPinned) {
 
 // =|=|= управління історіює та видаленими записами =|=|=
 
-// додаємо новий запис в історію в кільцевий буфер RAM
-void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t extraTextFlags = 0) {
-    if (!text) return;
-    uint32_t len = lstrlenW(text);
-    if (len == 0) return; // вихід, якщо новий "текст" порожній
-
-    // дедуплікація: ігноруємо текст, якщо він ідентичний попередньому
-    ClipEntry& lastEntry = unpinnedBuffer[unpinnedHead];
-    if ((lastEntry.dataflags & DataFlags::Used) && lastEntry.textLength == len) {
-        int checkLen = (len < 1020) ? len : 988;
-        if (wcsncmp(lastEntry.text, text, checkLen) == 0) return; 
-    }
-
-    // зсуваємо голову буфера (автообертання 255 -> 0 працює апаратно)
-    unpinnedHead++; 
-    ClipEntry& entry = unpinnedBuffer[unpinnedHead];
-
-    // якщо в комірці був старий запис (File) — чистимо його у сховищі
-    if (entry.dataflags & DataFlags::Used) {
-        RemoveByRealIndex(unpinnedHead, false);
-    }
-
-    // заповнюємо 8 байтів нових метаданих
-    entry.textLength = len;
-    entry.dataflags = DataFlags::Used | extraDataFlags;
-    entry.textflags = TextFlags::None | extraTextFlags;
-
-    // сортування за розміром (межа 16 КБ в байтах = 8192 символи wchar_t)
-    if (len <= 1020) {
-        entry.textflags |= TextFlags::Small;
-        wcsncpy_s(entry.text, 1020, text, _TRUNCATE);
-    } 
-    else if (len <= 8192) { 
-        entry.textflags |= TextFlags::Normal;
-        // копіюємо перші 1020 символів як inline-прев'ю (затре reserved поля на диску, що безпечно)
-        wcsncpy_s(entry.text, 1020, text, _TRUNCATE); 
-    } 
-    else {
-        entry.textflags |= TextFlags::File;
-        wcsncpy_s(entry.fileData.preview, 988, text, _TRUNCATE);
-        GenerateLargeFileName(entry.fileData.fileName);
-        CreateDirectoryW(L"ClipboardData", NULL);
-    }
-
-    // синхронізуємо стан з диском
-    SaveBlockToDisk(unpinnedHead, false, text);
-}
-
 // функція записує блок (і за потреби хвіст або зовнішній файл)
 void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
@@ -507,6 +460,54 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
         }
     }
 }
+// додаємо новий запис в історію в кільцевий буфер RAM
+void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t extraTextFlags = 0) {
+    if (!text) return;
+    uint32_t len = lstrlenW(text);
+    if (len == 0) return; // вихід, якщо новий "текст" порожній
+
+    // дедуплікація: ігноруємо текст, якщо він ідентичний попередньому
+    ClipEntry& lastEntry = unpinnedBuffer[unpinnedHead];
+    if ((lastEntry.dataflags & DataFlags::Used) && lastEntry.textLength == len) {
+        int checkLen = (len < 1020) ? len : 988;
+        if (wcsncmp(lastEntry.text, text, checkLen) == 0) return; 
+    }
+
+    // зсуваємо голову буфера (автообертання 255 -> 0 працює апаратно)
+    unpinnedHead++; 
+    ClipEntry& entry = unpinnedBuffer[unpinnedHead];
+
+    // якщо в комірці був старий запис (File) — чистимо його у сховищі
+    if (entry.dataflags & DataFlags::Used) {
+        RemoveByRealIndex(unpinnedHead, false);
+    }
+
+    // заповнюємо 8 байтів нових метаданих
+    entry.textLength = len;
+    entry.dataflags = DataFlags::Used | extraDataFlags;
+    entry.textflags = TextFlags::None | extraTextFlags;
+
+    // сортування за розміром (межа 16 КБ в байтах = 8192 символи wchar_t)
+    if (len <= 1020) {
+        entry.textflags |= TextFlags::Small;
+        wcsncpy_s(entry.text, 1020, text, _TRUNCATE);
+    } 
+    else if (len <= 8192) { 
+        entry.textflags |= TextFlags::Normal;
+        // копіюємо перші 1020 символів як inline-прев'ю (затре reserved поля на диску, що безпечно)
+        wcsncpy_s(entry.text, 1020, text, _TRUNCATE); 
+    } 
+    else {
+        entry.textflags |= TextFlags::File;
+        wcsncpy_s(entry.fileData.preview, 988, text, _TRUNCATE);
+        GenerateLargeFileName(entry.fileData.fileName);
+        CreateDirectoryW(L"ClipboardData", NULL);
+    }
+
+    // синхронізуємо стан з диском
+    SaveBlockToDisk(unpinnedHead, false, text);
+}
+
 // функція відновлює індексну карту прев'ю після перезапуску за мілісекунди
 void LoadHistory() {
     HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
