@@ -187,9 +187,13 @@ void SendKeyCombo(WORD modifier, WORD key) {
     bool lAltHeld = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
     bool lCtrlHeld = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
     bool rCtrlHeld = (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+    bool lWinHeld = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0;  // перевірка лівого Win
+    bool rWinHeld = (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;  // перевірка правого Win
     
-    // якщо користувач тримає Alt, відпускаємо його програмно.
+    // якщо користувач тримає Alt або Win, відпускаємо їх програмно, щоб вони не псували Ctrl+C/V
     if (lAltHeld) { inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LMENU; inputs[c].ki.dwFlags = KEYEVENTF_KEYUP; c++; }
+    if (lWinHeld) { inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LWIN; inputs[c].ki.dwFlags = KEYEVENTF_KEYUP; c++; }
+    if (rWinHeld) { inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_RWIN; inputs[c].ki.dwFlags = KEYEVENTF_KEYUP; c++; }
     
     // натискаємо модифікатор (напр. Ctrl) і саму клавішу (напр. V), потім відпускаємо обох
     inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = modifier; c++;
@@ -198,13 +202,14 @@ void SendKeyCombo(WORD modifier, WORD key) {
     inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = modifier; inputs[c].ki.dwFlags = KEYEVENTF_KEYUP; c++;
     
     if (lAltHeld) { 
-        // повертаємо лівий Alt назад, щоб користувач міг продовжувати тримати його
-        inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LMENU; c++; 
+        inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LMENU; c++;   // повертаємо лівий Alt, щоб користувач міг тримати його
         
         // обхід: клікаємо "пустим" Ctrl, щоб меню вікон (File, Edit...) не фокусувалося після відпускання Alt
         inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LCONTROL; c++;
         inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LCONTROL; inputs[c].ki.dwFlags = KEYEVENTF_KEYUP; c++;
     }
+    if (lWinHeld) { inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_LWIN; c++; }
+    if (rWinHeld) { inputs[c].type = INPUT_KEYBOARD; inputs[c].ki.wVk = VK_RWIN; c++; }
 
     // (!) якщо ми імітували відпускання Ctrl, але фізично він затиснутий, відновлюємо стан для ОС
     if (modifier == VK_CONTROL) {
@@ -1010,7 +1015,7 @@ void TransformClipboardText(TransformMode mode) {
                         if (mode == TransformMode::Layout) { // якщо це була саме розкладка
                             HKL targetHKL = NULL; // дескриптор цільової мови
                             if (toUkrCount > toEngCount) { // якщо більшість символів стали українськими
-                                targetHKL = LoadKeyboardLayoutW(L"00000422", KLF_ACTIVATE); // 0422 - код української розкладки
+                                targetHKL = LoadKeyboardLayoutW(L"00020422", KLF_ACTIVATE); // 0422 - код української розкладки
                             } else if (toEngCount > toUkrCount) { // якщо переважає англійська
                                 targetHKL = LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE); // 0409 - код англійської розкладки США
                             }
