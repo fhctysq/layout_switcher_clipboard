@@ -241,13 +241,12 @@ void UpdateListBox() {
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
         FormatPreviewForUI(entry.text, display);
         wchar_t uiText[UI_PREVIEW_LENGTH + 20];
-        if (entry.textflags & TextFlags::Dynamic) {
+        if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку
             StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
         } else {
             StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
         }
-        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)display);
-        
+        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
         SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
     }
     for (int i = 255; i >= 0; i--) { // ітеруємо по буферу закріплені (Pinned) записи
@@ -256,6 +255,13 @@ void UpdateListBox() {
         
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
         FormatPreviewForUI(entry.text, display);
+
+        wchar_t uiText[UI_PREVIEW_LENGTH + 20];
+        if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку і для запінених записів
+            StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
+        } else {
+            StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
+        }
 
         wchar_t pinnedDisplay[UI_PREVIEW_LENGTH + 10];
         StringCchPrintfW(pinnedDisplay, UI_PREVIEW_LENGTH + 10, L"📌 %s", display);
@@ -1087,9 +1093,6 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         LRESULT res = CallWindowProc(OldListBoxProc, hwnd, msg, wParam, lParam);
         DWORD itemInfo = SendMessage(hwnd, LB_ITEMFROMPOINT, 0, lParam);
         if (HIWORD(itemInfo) == 0) {  // перевіряємо, чи клік саме по елементу тексту, а не по скролбару (повзунку)
-            PostMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(1, 1000), (LPARAM)hwnd);
-        }
-        if (HIWORD(itemInfo) == 0) { 
             int selIdx = LOWORD(itemInfo);
             int clickX = GET_X_LPARAM(lParam);  // отримуємо горизонтальну координату кліку (X) з lParam
             
