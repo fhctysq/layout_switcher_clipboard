@@ -41,6 +41,6 @@ custom layout switcher (Ukrainian ↔ English) and clipboard manager tool genera
 ## компіляція (MSYS2 / MinGW) — вам потрібні лише файли layout_switcher_clipboard.cpp, resource.rc і resource.rc
 
 ```bash
-windres resource.rc -o resource.o && g++ -Os -O2 -s -flto layout_switcher_clipboard.cpp resource.o -o layout_switcher_clipboard.exe -luser32 -lgdi32 -mwindows -luxtheme
+windres resource.rc -o resource.o && g++ -s -Ofast -flto -march=x86-64-v2 -static layout_switcher_clipboard.cpp resource.o -o layout_switcher_clipboard.exe -luser32 -lgdi32 -mwindows -luxtheme
 ```
 
