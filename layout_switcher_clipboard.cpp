@@ -1328,7 +1328,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             
             // якщо запис запінений — шпилька яскрава, якщо ні — тьмяна (підказка для кліку)
             SetTextColor(hdc, isPinned ? RGB(255, 120, 50) : RGB(80, 80, 85));
-            DrawTextW(hdc, L"📌", -1, &pinRect, DT_SINGLELINE | DT_NOPREFIX);
+            DrawTextW(hdc, L"📌", -1, &btnRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             
             return TRUE;
         }
