@@ -733,17 +733,20 @@ void PasteLastAltC() {
 }
 // вставка конкретного тексту з історії (вибір через віконце)
 void PasteFromHistory(int index) {
-    if (index < 0 || index >= historyCount) return;
+    if (index < 0) return;
+
+    // розпаковуємо індекс і прапорець з меню
+    LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, index, 0);
+    if (itemData == LB_ERR) return;
+
+    bool isPinned = (itemData >> 8) & 1;
+    uint8_t realIdx = itemData & 0xFF;
     
     ShowWindow(hMainWindow, SW_HIDE); // ховаємо віконце
     ignoreClipboardUpdate = true; 
     BackupSysClipboard();
 
-    wchar_t* textToPaste = history[index];
-    bool isLarge = IsLargeFile(textToPaste);
-    
-    if (isLarge) textToPaste = LoadLargeText(textToPaste);
-
+    wchar_t* textToPaste = LoadTextByRealIndex(realIdx, isPinned);
     if (textToPaste && OpenClipboard(NULL)) {
         EmptyClipboard();
         size_t cch = lstrlenW(textToPaste) + 1;
@@ -759,19 +762,17 @@ void PasteFromHistory(int index) {
         SendKeyCombo(VK_CONTROL, 0x56); 
         Sleep(50);
     }
-    
-    if (isLarge && textToPaste) HeapFree(hMemHeap, 0, textToPaste); 
     RestoreSysClipboard(); 
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
 
-    // піднімаємо використаний текст нагору списку (щоб він був найновішим)
-    if (index != 0) {
-        wchar_t* temp = history[index];
-        for (int i = index; i > 0; --i) history[i] = history[i - 1];
-        history[0] = temp;
-        SaveHistory();
+    // піднімаємо використаний текст нагору списку (якщо він не Pinned)
+    if (textToPaste && !isPinned && realIdx != unpinnedHead) {
+        RemoveByRealIndex(realIdx, false);
+        AddToHistory(textToPaste);
     }
+
+    if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste); 
 }
 
 // зміна розкладки, регістру або закреслення тексту прямо на льоту
@@ -1216,18 +1217,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
 
-        case WM_VKEYTOITEM: // Обробка клавіатури, коли фокус у ListBox
+        case WM_VKEYTOITEM: // обробка клавіатури, коли фокус у ListBox
             if (LOWORD(wParam) == VK_RETURN) { 
                 PasteFromHistory(SendMessage(hListBox, LB_GETCURSEL, 0, 0)); return -2; 
             }
             if (LOWORD(wParam) == VK_ESCAPE) { 
                 ShowWindow(hwnd, SW_HIDE); return -2; 
             }
+            
+            if (LOWORD(wParam) == 'P' || LOWORD(wParam) == 'p') {  // стрибок до запінених клавішею 'P'
+                if (firstPinnedListIdx != -1) {
+                    SendMessage(hListBox, LB_SETCURSEL, firstPinnedListIdx, 0);
+                    // прокручуємо, щоб перший запінений елемент став на саму гору вікна
+                    SendMessage(hListBox, LB_SETTOPINDEX, firstPinnedListIdx, 0); 
+                }
+                return -2; // кажемо системі, що ми самі обробили натискання
+            }
+
             if (LOWORD(wParam) == VK_DELETE) { 
                 int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                if (sel >= 0 && sel < historyCount) {
-                    RemoveFromHistory(sel); UpdateListBox();
-                    SendMessage(hListBox, LB_SETCURSEL, sel > 0 ? sel - 1 : 0, 0); 
+                if (sel >= 0) {
+                    LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, sel, 0);
+                    if (itemData != LB_ERR) {
+                        bool isPinned = (itemData >> 8) & 1;
+                        uint8_t realIdx = itemData & 0xFF;
+                        
+                        RemoveByRealIndex(realIdx, isPinned); 
+                        UpdateListBox();
+                        
+                        int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
+                        if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0); 
+                    }
                 }
                 return -2;
             }
