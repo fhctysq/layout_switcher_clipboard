@@ -117,7 +117,8 @@ enum class TransformMode {
 enum class HotkeyCmd { 
     Layout = 1, Copy = 2, Paste = 3, MenuDown = 4, Cut = 6, 
     Undo = 7, MenuUp = 8, Case = 9, SilentCopyAll = 10, 
-    StrikeSlanted = 11, StrikeStraight = 12 
+    StrikeSlanted = 11, StrikeStraight = 12,  // команди для косметики тексту
+    PinCopy = 13, PinCut = 14, PinPaste = 15  // команди для роботи із закріпленими в буфері
 };
 
 // =|=|= словники для зміни розкладки =|=|=
@@ -248,6 +249,33 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
 
         if (isKeyDown) {
+            // перевіряємо комбінацію Alt+Win або Win+Alt при відкритому меню
+            if (IsWindowVisible(hMainWindow)) {
+                bool isWin = (pKeyBoard->vkCode == VK_LWIN || pKeyBoard->vkCode == VK_RWIN);
+                bool isAlt = (pKeyBoard->vkCode == VK_LMENU || pKeyBoard->vkCode == VK_RMENU);
+                
+                // якщо одна з них натиснута, а інша вже утримується фізично
+                if ((isWin && ((GetAsyncKeyState(VK_LMENU) & 0x8000) || (GetAsyncKeyState(VK_RMENU) & 0x8000))) ||
+                    (isAlt && ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)))) 
+                {
+                    int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
+                    if (sel >= 0) {
+                        LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, sel, 0);
+                        if (itemData != LB_ERR) {
+                            bool isPinned = (itemData >> 8) & 1;
+                            uint8_t realIdx = itemData & 0xFF;
+                            
+                            TogglePinState(realIdx, isPinned);
+                            
+                            UpdateListBox(); // оновлюємо UI та зберігаємо виділення на тій самій позиції
+                            int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
+                            if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);
+                        }
+                    }
+                    CancelWindowsMenuFocus();
+                    return 1; // блокуємо подальше спливання клавіш в ОС
+                }
+            }
             if (pKeyBoard->vkCode == VK_PAUSE) {
                 if (isRightAltPressed) return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
                 
@@ -258,22 +286,27 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 else PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0);                  
                 return 1;
             }
+            // перевіряємо, чи затиснута будь-яка з клавіш Windows
+            bool isWinPressed = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+            // глобальні суперкомбінації (затиснуті Alt і Win)
+            if (isLeftAltPressed && isWinPressed && !isRightAltPressed) {
+                if (pKeyBoard->vkCode == 'C') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::PinCopy), 0); return 1; }
+                if (pKeyBoard->vkCode == 'X') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::PinCut), 0); return 1; }
+                if (pKeyBoard->vkCode == 'V') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::PinPaste), 0); return 1; }
+            }
             
-            if (isLeftAltPressed && !isRightAltPressed) { 
+            if (isLeftAltPressed && !isRightAltPressed && !isWinPressed) { 
                 if (pKeyBoard->vkCode == 'C') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Copy), 0); return 1; }
                 if (pKeyBoard->vkCode == 'V') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Paste), 0); return 1; }
                 if (pKeyBoard->vkCode == 'B') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::MenuDown), 0); return 1; }
                 if (pKeyBoard->vkCode == 'X') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Cut), 0); return 1; } 
                 if (pKeyBoard->vkCode == 'Z') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Undo), 0); return 1; } 
                 if (pKeyBoard->vkCode == 'N') { CancelWindowsMenuFocus(); PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::MenuUp), 0); return 1; } 
-                
-                // вихід з програми (Alt+Q)
-                if (pKeyBoard->vkCode == 'Q') { 
+                if (pKeyBoard->vkCode == 'Q') {  // вихід з програми (Alt+Q)
                     CancelWindowsMenuFocus(); 
                     PostMessage(hMainWindow, WM_CLOSE, 0, 0); 
                     return 1; 
                 }
-
                 if (pKeyBoard->vkCode == VK_DIVIDE) { 
                     CancelWindowsMenuFocus();
                     PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::StrikeSlanted), 0); 
@@ -370,48 +403,8 @@ LARGE_INTEGER CalculateOffset(uint8_t index, bool isPinned) {
     return offset;
 }
 
-// зберігає позицію лічильників-голів на початку файлу
-void SaveHeadsToDisk() {
-    HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile != INVALID_HANDLE_VALUE) {
-        DWORD w;
-        uint8_t heads[2] = { unpinnedHead, pinnedHead };
-        WriteFile(hFile, heads, 2, &w, NULL);
-        CloseHandle(hFile);
-    }
-}
-
 // =|=|= управління історіює та видаленими записами =|=|=
 
-// // функція видаляє конкретний запис з історії (і перевіряє, чи він не був записаний як Alt+C)
-// void RemoveFromHistory(int index) {
-//     if (index < 0 || index >= historyCount) return;
-    
-//     // перевірка зомбі (Alt+V логіка) ---
-//     // якщо видаляємо текст скопійований через Alt+C, занулюємо lastAltCCopy,
-//     // щоб пізніше не спробувати вставити "порожнечу"
-//     if (history[index] == lastAltCCopy) {
-//         lastAltCCopy = NULL;
-//     }
-//     // якщо скопійований текст був гігантським і зберігався на диску, видаляємо фізичний файл
-//     if (IsLargeFile(history[index])) {
-//         const wchar_t* pipe = wcschr(history[index], L'|');
-//         if (pipe) {
-//             int pathLen = pipe - (history[index] + 11);
-//             wchar_t filepath[MAX_PATH] = {0};
-//             if (pathLen >= MAX_PATH) pathLen = MAX_PATH - 1;  
-//             wcsncpy_s(filepath, MAX_PATH, history[index] + 11, pathLen);
-//             filepath[pathLen] = L'\0';  
-//             DeleteFileW(filepath);
-//         }
-//     }
-    
-//     HeapFree(hMemHeap, 0, history[index]); // звільняємо пам'ять, що текст її займав у купі
-//     // зсуваємо нижні записи на одну позицію вгору, закриваючи дірку від видаленого елемента
-//     for (int i = index; i < historyCount - 1; ++i) history[i] = history[i + 1];
-//     historyCount--;
-//     SaveHistory(); // синхронізуємо зміни з файлом на диску
-// }
 // додаємо новий запис в історію в кільцевий буфер RAM
 void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t extraTextFlags = 0) {
     if (!text) return;
@@ -457,24 +450,28 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     }
 
     // синхронізуємо стан з диском
-    SaveHeadsToDisk();
     SaveBlockToDisk(unpinnedHead, false, text);
 }
 
 // функція записує блок (і за потреби хвіст або зовнішній файл)
 void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
-    ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index];
+    ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
     
-    if (entry.textflags & TextFlags::Dynamic) return; // паролі на диск не пишемо
-
     HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
-        LARGE_INTEGER offset = CalculateOffset(index, isPinned);
-        SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
-
+        uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники на початку файлу (офсет 0)
         DWORD written;
-        // записуємо 2 КБ індексної картки (метадані + прев'ю)
-        WriteFile(hFile, &entry, RAM_BLOCK_SIZE, &written, NULL);
+        WriteFile(hFile, heads, 2, &written, NULL); // записуємо 2 байти лічильників на зміщення 0
+
+        if (entry.textflags & TextFlags::Dynamic) {
+            CloseHandle(hFile);
+            return; // якщо це Dynamic (сенситивний запис), не пишемо його на диск і нічого не робимо
+        }
+
+        LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
+        SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+       
+        WriteFile(hFile, &entry, RAM_BLOCK_SIZE, &written, NULL);  // записуємо 2 КБ (метадані + прев'ю)
 
         // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
         if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
@@ -491,7 +488,7 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     }
 
     // якщо це великий текст, виносимо файл в окрему папку
-    if (fullText && (entry.textflags & TextFlags::File)) {
+    if (fullText && (entry.textflags & TextFlags::File) && !(entry.textflags & TextFlags::Dynamic)) {
         wchar_t filepath[MAX_PATH];
         StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\%s", entry.fileData.fileName);
         
@@ -501,7 +498,8 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
             BYTE* encBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, fullBytes);
             if (encBuffer) {
                 memcpy(encBuffer, fullText, fullBytes);
-                XorBuffer(encBuffer, fullBytes); // шифруємо весь файл
+                XorBuffer(encBuffer, fullBytes);  // шифруємо весь файл
+                DWORD written;
                 WriteFile(hLargeFile, encBuffer, fullBytes, &written, NULL);
                 HeapFree(GetProcessHeap(), 0, encBuffer);
             }
@@ -620,6 +618,82 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
     SaveBlockToDisk(index, isPinned, NULL); // зберігаємо оновлену затомбстонену картку на диск
 }
 
+// функція переносить запис між двома барабанами (звичайного і закріпленого)
+void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
+    // визначаємо джерело (звідки беремо)
+    ClipEntry& sourceEntry = currentlyPinned ? pinnedBuffer[realIdx] : unpinnedBuffer[realIdx];
+    if (!(sourceEntry.dataflags & DataFlags::Used)) return;
+
+    uint8_t& targetHead = currentlyPinned ? unpinnedHead : pinnedHead; // і куди переносимо)
+    ClipEntry* targetBuffer = currentlyPinned ? unpinnedBuffer : pinnedBuffer;
+
+    targetHead++; // зсуваємо лічильник цільового барабану (авто-обертання 255 -> 0)
+    uint8_t targetIdx = targetHead;
+    ClipEntry& targetEntry = targetBuffer[targetIdx];
+
+    // якщо в цільовій комірці з минулого кола лежить великий текст - файл, - видаляємо його зараз (!)
+    if ((targetEntry.dataflags & DataFlags::Used) && (targetEntry.textflags & TextFlags::File)) {
+        wchar_t filepath[MAX_PATH];
+        StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\%s", targetEntry.fileData.fileName);
+        DeleteFileW(filepath);
+    }
+
+    targetEntry = sourceEntry; // копіюємо 2 КБ структури з оперативки в оперативку
+    
+    if (currentlyPinned) targetEntry.dataflags &= ~DataFlags::Pinned; // коригуємо прапорці статусу в новій комірці
+    else targetEntry.dataflags |= DataFlags::Pinned;
+
+    // оскільки хвіст Normal жорстко прив'язаний до індексу блоку на диску, його треба перекопіювати
+    wchar_t* normalTail = NULL;
+    DWORD tailBytes = 0;
+    if ((sourceEntry.textflags & TextFlags::Normal) && sourceEntry.textLength > 1020) {
+        tailBytes = (sourceEntry.textLength - 1020) * sizeof(wchar_t);
+        normalTail = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, tailBytes);
+        if (normalTail) {
+            LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
+            sourceOffset.QuadPart += RAM_BLOCK_SIZE; // зсув на хвіст
+            
+            HANDLE hFileR = CreateFileW(L"custom_clipboard.bin", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFileR != INVALID_HANDLE_VALUE) {
+                SetFilePointerEx(hFileR, sourceOffset, NULL, FILE_BEGIN);
+                DWORD br; ReadFile(hFileR, normalTail, tailBytes, &br, NULL); // читаємо хвіст прямо в XOR-і
+                CloseHandle(hFileR);
+            }
+        }
+    }
+
+    sourceEntry.dataflags = DataFlags::Empty; // позначаємо перенесений запис Empty в попередньому переліку
+
+    // синхронізуємо з диском (один вхід до файлу для чотирьох задач)
+    HANDLE hFileW = CreateFileW(L"custom_clipboard.bin", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFileW != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        
+        // 1: оновлюємо глобальні лічильники в суперблоці (офсет 0)
+        uint8_t heads[2] = { unpinnedHead, pinnedHead };
+        WriteFile(hFileW, heads, 2, &written, NULL);
+
+        // 2: записуємо нову комірку (метадані + прев'ю)
+        LARGE_INTEGER targetOffset = CalculateOffset(targetIdx, !currentlyPinned);
+        SetFilePointerEx(hFileW, targetOffset, NULL, FILE_BEGIN);
+        WriteFile(hFileW, &targetEntry, RAM_BLOCK_SIZE, &written, NULL);
+
+        // 3: якщо був хвіст Normal-тексту, записуємо його у новий офсет
+        if (normalTail) {
+            WriteFile(hFileW, normalTail, tailBytes, &written, NULL);
+        }
+
+        // 4: позначаємо стару комірку на диску Empty
+        LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
+        SetFilePointerEx(hFileW, sourceOffset, NULL, FILE_BEGIN);
+        WriteFile(hFileW, &sourceEntry, RAM_BLOCK_SIZE, &written, NULL);
+
+        CloseHandle(hFileW);
+    }
+
+    if (normalTail) HeapFree(GetProcessHeap(), 0, normalTail);
+}
+
 // =|=|= сепарація системного буфера і кастомного =|=|=
 // бекап справжнього буфера обміну, щоб технічні копіювання (Ctrl+C) не знищили дані користувача
 void BackupSysClipboard() {
@@ -665,7 +739,7 @@ void ClearPendingClipboardUpdates() {
 
 // кастомне копіювання/вирізання (наприклад, через Alt+C). 
 // setAsAltC вказує, чи потрібно запам'ятати цей текст для швидкої вставки через Alt+V
-void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) { 
+void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned = false) { 
     ignoreClipboardUpdate = true; // кажемо обробнику ігнорувати наступну зміну буфера
     BackupSysClipboard();
     
@@ -684,10 +758,40 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true) {
         if (hData) {
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pText) {
-                AddToHistory(pText, setAsAltC ? DataFlags::CtrlC : 0);// зберігаємо текст в історію (він стане на позицію unpinnedHead)
-                if (setAsAltC) {
-                    lastAltCIndex = unpinnedHead; // запам'ятовуємо індекс картки кільцевого буфера для Alt+V
-                    lastAltCIsPinned = false;
+                if (copyDirectToPinned) {
+                    pinnedHead++; // тимчасово зсуваємо pinnedHead вперед і робимо запис через проміжну змінну
+                    ClipEntry& entry = pinnedBuffer[pinnedHead];
+                    if (entry.dataflags & DataFlags::Used) {
+                        RemoveByRealIndex(pinnedHead, true);
+                    }
+                    uint32_t len = lstrlenW(pText);
+                    entry.textLength = len;
+                    entry.dataflags = DataFlags::Used | DataFlags::Pinned | (setAsAltC ? DataFlags::CtrlC : 0);
+                    
+                    if (len <= 1020) {
+                        entry.textflags = TextFlags::Small;
+                        wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
+                    } else if (len <= 8192) {
+                        entry.textflags = TextFlags::Normal;
+                        wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
+                    } else {
+                        entry.textflags = TextFlags::File;
+                        wcsncpy_s(entry.fileData.preview, 988, pText, _TRUNCATE);
+                        GenerateLargeFileName(entry.fileData.fileName);
+                        CreateDirectoryW(L"ClipboardData", NULL);
+                    }
+                    SaveBlockToDisk(pinnedHead, true, pText);
+                    
+                    if (setAsAltC) {
+                        lastAltCIndex = pinnedHead;  // запам'ятовуємо індекс закріпленої картки кільцевого буфера
+                        lastAltCIsPinned = true;
+                    }
+                } else {
+                    AddToHistory(pText, setAsAltC ? DataFlags::CtrlC : 0);  // зберігаємо текст в історію (він стане на позицію unpinnedHead)
+                    if (setAsAltC) {
+                        lastAltCIndex = unpinnedHead;  // запам'ятовуємо індекс картки кільцевого буфера для Alt+V
+                        lastAltCIsPinned = false;
+                    }
                 }
                 GlobalUnlock(hData);
             }
@@ -898,6 +1002,12 @@ void UpdateListBox() {
 
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
         FormatPreviewForUI(entry.text, display);
+        wchar_t uiText[UI_PREVIEW_LENGTH + 20];
+        if (entry.textflags & TextFlags::Dynamic) {
+            StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
+        } else {
+            StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
+        }
         LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)display);
         
         SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
@@ -953,12 +1063,12 @@ void ShowClipboardUI(bool selectLast = false) {
     SetFocus(hListBox);
 }
 
-// хак для перехоплення кліків мишею по списку (Listbox)
+// колбек для перехоплення кліків мишею по списку (Listbox)
 LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_RBUTTONDOWN) {
         DWORD itemInfo = SendMessage(hwnd, LB_ITEMFROMPOINT, 0, lParam);
         if (HIWORD(itemInfo) == 0) { 
-            SendMessage(hwnd, LB_SETCURSEL, LOWORD(itemInfo), 0); // Тільки виділяємо (щоб можна було видалити)
+            SendMessage(hwnd, LB_SETCURSEL, LOWORD(itemInfo), 0); // тільки виділяємо (щоб можна було видалити)
         }
         return 0; 
     }
@@ -966,9 +1076,33 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         LRESULT res = CallWindowProc(OldListBoxProc, hwnd, msg, wParam, lParam);
         DWORD itemInfo = SendMessage(hwnd, LB_ITEMFROMPOINT, 0, lParam);
         if (HIWORD(itemInfo) == 0) { 
-            PostMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(1, 1000), (LPARAM)hwnd); // Вставляємо при лівому кліку
+            PostMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(1, 1000), (LPARAM)hwnd);
         }
-        return res;
+        if (HIWORD(itemInfo) == 0) { 
+            int selIdx = LOWORD(itemInfo);
+            int clickX = GET_X_LPARAM(lParam);  // отримуємо горизонтальну координату кліку (X) з lParam
+            
+            // якщо клік відбувся в ділянці перших 45 пікселів зліва (зона іконки шпильки)
+            if (clickX >= UI_ITEM_GAP && clickX <= (UI_ITEM_GAP + 45)) {
+                LRESULT itemData = SendMessage(hwnd, LB_GETITEMDATA, selIdx, 0);
+                if (itemData != LB_ERR) {
+                    bool isPinned = (itemData >> 8) & 1;
+                    uint8_t realIdx = itemData & 0xFF;
+                    
+                    TogglePinState(realIdx, isPinned);
+                    UpdateListBox();
+                    
+                    int count = SendMessage(hwnd, LB_GETCOUNT, 0, 0);
+                    if (count > 0) SendMessage(hwnd, LB_SETCURSEL, selIdx >= count ? count - 1 : selIdx, 0);
+                }
+                return 0; // перехопили клік, не виконуємо стандартну вставку тексту
+            }
+            
+            // клікнули правіше — виконуємо звичайну вставку тексту
+            SendMessage(hwnd, LB_SETCURSEL, selIdx, 0);
+            PostMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(1, 1000), (LPARAM)hwnd);  // вставляємо при лівому кліку
+        }
+        return 0;
     }
     return CallWindowProc(OldListBoxProc, hwnd, msg, wParam, lParam);
 }
@@ -1122,30 +1256,42 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HPEN borderPen = CreatePen(PS_SOLID, 1, isSelected ? RGB(100, 100, 110) : RGB(60, 60, 60));
             HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
             HGDIOBJ oldPen = SelectObject(hdc, borderPen);
-            
+            // малювання RoundRect для фону картки
             RoundRect(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, UI_CORNER_RADIUS, UI_CORNER_RADIUS);
             SelectObject(hdc, oldBrush); SelectObject(hdc, oldPen);
             DeleteObject(bgBrush); DeleteObject(borderPen);
 
-            wchar_t text[UI_PREVIEW_LENGTH + 10];
-            SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
-            
+            // розпаковуємо дані, щоб знати стан запису
+            LRESULT itemData = SendMessage(dis->hwndItem, LB_GETITEMDATA, dis->itemID, 0);
+            bool isPinned = (itemData != LB_ERR) ? ((itemData >> 8) & 1) : false;
+
             SetBkMode(hdc, TRANSPARENT);
+            
+            RECT pinRect = cardRect;  // малюємо пін
+            pinRect.left += 12; pinRect.right = pinRect.left + 30;
+            pinRect.top += 12;
+            
+            // якщо запис запінений — шпилька яскрава, якщо ні — тьмяна (підказка для кліку)
+            SetTextColor(hdc, isPinned ? RGB(255, 120, 50) : RGB(80, 80, 85));
+            DrawTextW(hdc, L"📌", -1, &pinRect, DT_SINGLELINE | DT_NOPREFIX);
+
+            wchar_t text[UI_PREVIEW_LENGTH + 10]; // малюємо текст (зсуваємо ліву межу на 45 пікселів, звільняючи місце під шпильку)
+            SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
             SetTextColor(hdc, RGB(240, 240, 240));
             
             RECT textRect = cardRect;
-            textRect.left += 15; textRect.right -= 15;
+            textRect.left += 45; textRect.right -= 15; // зсув вправо на 45 для шпильки
             textRect.top += 10; textRect.bottom -= 10;
+            wchar_t* drawTextPtr = text;    // якщо в UpdateListBox префікс "📌 ", треба його пропустити при малюванні тексту
+            if (wcsncmp(text, L"📌 ", 2) == 0) drawTextPtr = text + 2;
             DrawTextW(hdc, text, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
             return TRUE;
         }
 
-        case WM_TIMER: // Таймер для неблокуючого виконання "Ctrl+A" копіювання
+        case WM_TIMER: // таймер для неблокуючого виконання "Ctrl+A" копіювання
             if (wParam == 2026) {
                 KillTimer(hwnd, 2026);
-                // Копіюємо (0x43 = 'C'), але НЕ записуємо як Alt+C буфер (false), 
-                // щоб не перезатерти користувачу його цільовий запис для Alt+V
-                CustomCopyOrCut(0x43, false); 
+                CustomCopyOrCut(0x43, false);  // копіюємо (0x43 = 'C'), але не позначаємо як Alt+C (false), зберігаючи поточний Alt+V
             }
             break;
 
@@ -1154,21 +1300,49 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             
             if (cmd == HotkeyCmd::Layout) { TransformClipboardText(TransformMode::Layout); }  
             else if (cmd == HotkeyCmd::Copy) { CustomCopyOrCut(0x43, true); }    
-            else if (cmd == HotkeyCmd::Paste) {        
+            else if (cmd == HotkeyCmd::Cut) { CustomCopyOrCut(0x58, true); }  // вирізання
+            else if (cmd == HotkeyCmd::Paste) {        // вставка
                 if (IsWindowVisible(hMainWindow)) {
                     int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
                     if (sel >= 0) PasteFromHistory(sel);
-                    else {
-                        // якщо нічого не виділено в переліку, логіка за замовчуванням
+                    else {   // якщо нічого не виділено в переліку, логіка за замовчуванням
                         if (lastAltCCopy) PasteLastAltC();
                         else if (historyCount > 0) PasteFromHistory(0);
                     }
-                } else { 
-                    // вікно закрите. якщо є запис по Alt+C — вставляє його, інакше — найновіший
+                } else {  // вікно закрите. якщо є запис по Alt+C — вставляємо його, інакше — найновіший
                     if (lastAltCCopy) PasteLastAltC();
                     else if (historyCount > 0) PasteFromHistory(0);
                 }
             }   
+            // обробка комбінацій Alt+Win
+            else if (cmd == HotkeyCmd::PinCopy) { CustomCopyOrCut(0x43, true, true); }
+            else if (cmd == HotkeyCmd::PinCut) { CustomCopyOrCut(0x58, true, true); }
+            else if (cmd == HotkeyCmd::PinPaste) {
+                // вставка останнього саме закріпленого запису (шукаємо останній Used у pinned буфері)
+                if (pinnedBuffer[pinnedHead].dataflags & DataFlags::Used) {
+                    ignoreClipboardUpdate = true;
+                    BackupSysClipboard();
+                    wchar_t* textToPaste = LoadTextByRealIndex(pinnedHead, true);
+                    if (textToPaste && OpenClipboard(NULL)) {
+                        EmptyClipboard();
+                        size_t cch = lstrlenW(textToPaste) + 1;
+                        HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
+                        if (hData) {
+                            wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
+                            StringCchCopyW(pDest, cch, textToPaste);
+                            GlobalUnlock(hData);
+                            SetClipboardData(CF_UNICODETEXT, hData);
+                        }
+                        CloseClipboard();
+                        SendKeyCombo(VK_CONTROL, 0x56);
+                        Sleep(50);
+                    }
+                    if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste);
+                    RestoreSysClipboard();
+                    ClearPendingClipboardUpdates();
+                    ignoreClipboardUpdate = false;
+                }
+            }
             else if (cmd == HotkeyCmd::MenuDown) {     
                 if (IsWindowVisible(hMainWindow)) {
                     int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
@@ -1177,8 +1351,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         SendMessage(hListBox, LB_SETCURSEL, (sel + 1) % count, 0); 
                     }
                 } else { ShowClipboardUI(false); } 
-            } 
-            else if (cmd == HotkeyCmd::Cut) { CustomCopyOrCut(0x58, true); }      
+            }     
             else if (cmd == HotkeyCmd::Undo) { SendKeyCombo(VK_CONTROL, 0x5A); }  
             else if (cmd == HotkeyCmd::MenuUp) {                            
                 if (IsWindowVisible(hMainWindow)) {
@@ -1228,7 +1401,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (LOWORD(wParam) == 'P' || LOWORD(wParam) == 'p') {  // стрибок до запінених клавішею 'P'
                 if (firstPinnedListIdx != -1) {
                     SendMessage(hListBox, LB_SETCURSEL, firstPinnedListIdx, 0);
-                    // прокручуємо, щоб перший запінений елемент став на саму гору вікна
+                    // прокручуємо на перший запінений елемент
                     SendMessage(hListBox, LB_SETTOPINDEX, firstPinnedListIdx, 0); 
                 }
                 return -2; // кажемо системі, що ми самі обробили натискання
