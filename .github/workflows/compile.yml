@@ -24,7 +24,7 @@ jobs:
       shell: msys2 {0}
       run: |
         windres resource.rc -o resource.o
-        g++ -Os -O2 -s -flto layout_switcher_clipboard.cpp resource.o -o layout_switcher_clipboard.exe -luser32 -lgdi32 -mwindows -luxtheme
+        g++ -s -Ofast -flto -march=x86-64-v2 -static layout_switcher_clipboard.cpp resource.o -o layout_switcher_clipboard.exe -luser32 -lgdi32 -mwindows -luxtheme
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
