@@ -263,11 +263,7 @@ void UpdateListBox() {
             StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
         }
 
-        wchar_t pinnedDisplay[UI_PREVIEW_LENGTH + 10];
-        StringCchPrintfW(pinnedDisplay, UI_PREVIEW_LENGTH + 10, L"📌 %s", display);
-
-        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)pinnedDisplay);
-        
+        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
         SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (1 << 8) | realIdx); // маска координати: 1 = Pinned
 
         if (firstPinnedListIdx == -1) {  // запам'ятовуємо, де в переліку почався блок запінених
@@ -939,56 +935,56 @@ void PasteFromHistory(int index) {
 
 // зміна розкладки, регістру або закреслення тексту прямо на льоту
 void TransformClipboardText(TransformMode mode) {
-    ignoreClipboardUpdate = true; 
-    BackupSysClipboard();
+    ignoreClipboardUpdate = true;  // блокуємо реакцію на зміну буфера, котру робимо
+    BackupSysClipboard();  // зберігаємо оригінальний буфер
 
-    DWORD currentSeq = GetClipboardSequenceNumber();
-    SendKeyCombo(VK_CONTROL, 0x43);  
+    DWORD currentSeq = GetClipboardSequenceNumber(); // беремо унікальний ID стану
+    SendKeyCombo(VK_CONTROL, 0x43);   // надсилаємо системі натискання Ctrl+C
     
-    bool clipboardUpdated = false;
-    for (int i = 0; i < 15; ++i) {
+    bool clipboardUpdated = false;  // прапорець успішного перехоплення тексту
+    for (int i = 0; i < 15; ++i) {  // циклічно чекаємо відповіді від програми-донора
         Sleep(20);
-        if (GetClipboardSequenceNumber() != currentSeq) { clipboardUpdated = true; break; }
+        if (GetClipboardSequenceNumber() != currentSeq) { clipboardUpdated = true; break; }  // ID змінився = текст надійшов
     }
     
-    if (clipboardUpdated && OpenClipboard(NULL)) {
-        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (clipboardUpdated && OpenClipboard(NULL)) {  // буфер оновився і отримали доступ
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);  // беремо дескриптор на Юнікод-текст
         if (hData) {
-            wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
+            wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));  // фіксуємо пам'ять ОС та отримуємо рядок
             if (pText) {
-                size_t len = lstrlenW(pText);
+                size_t len = lstrlenW(pText);  // обчислюємо довжину вхідного тексту
                 size_t size = (mode == TransformMode::StrikeSlanted || mode == TransformMode::StrikeStraight) 
-                              ? (len * 2 + 1) * sizeof(wchar_t) 
+                              ? (len * 2 + 3) * sizeof(wchar_t)  // +3 символи для закреслення (ZWS + strike + нуль-термінатор)
                               : (len + 1) * sizeof(wchar_t);
-                HGLOBAL hNewData = GlobalAlloc(GMEM_MOVEABLE, size);
+                HGLOBAL hNewData = GlobalAlloc(GMEM_MOVEABLE, size);  // просимо в системи глобальний мобільний блок
                 
-                if (hNewData) {
-                    wchar_t* pNewText = static_cast<wchar_t*>(GlobalLock(hNewData));
-                    bool changed = false;
+                if (hNewData) {  // якщо ОС успішно виділила пам'ять
+                    wchar_t* pNewText = static_cast<wchar_t*>(GlobalLock(hNewData));  // фіксуємо новий блок під запис
+                    bool changed = false;  // перевіряємо, чи змінився хоч один символ
 
-                    // закреслення тексту
-                    if (mode == TransformMode::StrikeSlanted || mode == TransformMode::StrikeStraight) {
-                        wchar_t strikeChar = (mode == TransformMode::StrikeSlanted) ? L'\x0337' : L'\x0336';
-                        size_t j = 0;
-                        for (size_t i = 0; i < len; ++i) {
+                    if (mode == TransformMode::StrikeSlanted || mode == TransformMode::StrikeStraight) {      // закреслення тексту
+                        wchar_t strikeChar = (mode == TransformMode::StrikeSlanted) ? L'\x0337' : L'\x0336';  // обираємо Юнікод-код скісної або прямої риски
+                        size_t j = 0; // індекс для результуючого рядка
+                        pNewText[j++] = L'\x200B'; // ставимо невидимий Zero-Width Space перед першою літерою
+                        pNewText[j++] = strikeChar; // накладаємо на нього закреслення
+                        for (size_t i = 0; i < len; ++i) { // йдемо по кожному символу оригіналу
                             pNewText[j++] = pText[i];
-                            bool isHighSurrogate = (pText[i] >= 0xD800 && pText[i] <= 0xDBFF);
-                            if (!isHighSurrogate && pText[i] != L'\r' && pText[i] != L'\n' && pText[i] != L'\t') {
-                                pNewText[j++] = strikeChar; 
-                                changed = true;
+                            bool isHighSurrogate = (pText[i] >= 0xD800 && pText[i] <= 0xDBFF);  // перевіряємо, чи це не перша половина емодзі
+                            if (!isHighSurrogate && pText[i] != L'\r' && pText[i] != L'\n' && pText[i] != L'\t') {  // ігноруємо службові переноси та сурогатні пари
+                                pNewText[j++] = strikeChar;  // вклинюємо комбінований символ закреслення
+                                changed = true; // успіх
                             }
                         }
-                        pNewText[j] = L'\0';
+                        pNewText[j] = L'\0';  // нуль-термінатор в кінці рядка
                     } 
-                    // зміна розкладки та регістру
-                    else {
+                    else {   // зміна розкладки та регістру
                         for (size_t i = 0; i < len; ++i) {
-                            wchar_t ch = pText[i];
+                            wchar_t ch = pText[i];  // копіюємо кожен поточний символ
                             if (mode == TransformMode::Layout) {
-                                if (eng_to_ukr[ch]) { pNewText[i] = eng_to_ukr[ch]; changed = true; }
-                                else if (ukr_to_eng[ch]) { pNewText[i] = ukr_to_eng[ch]; changed = true; }
-                                else { pNewText[i] = ch; }
-                            } else if (mode == TransformMode::Case) {
+                                if (eng_to_ukr[ch]) { pNewText[i] = eng_to_ukr[ch]; changed = true; toUkrCount++; } // англ -> укр
+                                else if (ukr_to_eng[ch]) { pNewText[i] = ukr_to_eng[ch]; changed = true; toEngCount++; } // укр -> англ
+                                else { pNewText[i] = ch; } // цифри, пробіли
+                            } else if (mode == TransformMode::Case) { // інверсія регістру
                                 WCHAR c = ch;
                                 if (IsCharUpperW(c)) { 
                                     CharLowerBuffW(&c, 1); 
@@ -1000,36 +996,47 @@ void TransformClipboardText(TransformMode mode) {
                                     pNewText[i] = c; 
                                     changed = true; 
                                 }
-                                else { pNewText[i] = ch; }
+                                else { pNewText[i] = ch; } // розділові знаки ігноруємо
                             }
                         }
-                        pNewText[len] = L'\0';
+                        pNewText[len] = L'\0'; // закриваємо Юнікод-рядок нулем
                     }
 
                     GlobalUnlock(hNewData);
 
-                    // якщо були зміни — вставляємо текст назад у програму
-                    if (changed) {
-                        EmptyClipboard();
-                        SetClipboardData(CF_UNICODETEXT, hNewData);
-                        GlobalUnlock(hData);
-                        CloseClipboard();
+                    if (changed) {   // якщо були зміни — вставляємо текст назад у програму
+                        if (mode == TransformMode::Layout) { // якщо це була саме розкладка
+                            HKL targetHKL = NULL; // дескриптор цільової мови
+                            if (toUkrCount > toEngCount) { // якщо більшість символів стали українськими
+                                targetHKL = LoadKeyboardLayoutW(L"00000422", KLF_ACTIVATE); // 0422 - код української розкладки
+                            } else if (toEngCount > toUkrCount) { // якщо переважає англійська
+                                targetHKL = LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE); // 0409 - код англійської розкладки США
+                            }
+                            if (targetHKL) { // якщо мова встановлена в системі
+                                // просимо активне вікно змінити мову введення
+                                PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)targetHKL); 
+                            }
+                        }
+                        EmptyClipboard();  // очищуємо буфер обміну
+                        SetClipboardData(CF_UNICODETEXT, hNewData);  // віддаємо ОС блок даних
+                        GlobalUnlock(hData);  // розблоковуємо системний буфер обміну
+                        CloseClipboard();  // закриваємо сесію Clipboard API
 
-                        SendKeyCombo(VK_CONTROL, 0x56); 
+                        SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V
                         Sleep(50); 
-                        goto cleanup; 
-                    } else { GlobalFree(hNewData); }
+                        goto cleanup;   // стрибаємо на фінальне очищення
+                    } else { GlobalFree(hNewData); }  // якщо змін не було — знищуємо виділену пам'ять
                 }
             }
-            GlobalUnlock(hData);
+            GlobalUnlock(hData);  // знімаємо блок
         }
         CloseClipboard();
     }
 
 cleanup:
-    RestoreSysClipboard();
-    ClearPendingClipboardUpdates();
-    ignoreClipboardUpdate = false;
+    RestoreSysClipboard();  // повертаємо стан системного буфера
+    ClearPendingClipboardUpdates();  // чистимо чергу повідомлень ОС
+    ignoreClipboardUpdate = false;  // повертаємо хук буфера
 }
 
 // =|=|= інтерфейс та графіка =|=|=
@@ -1095,9 +1102,21 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         if (HIWORD(itemInfo) == 0) {  // перевіряємо, чи клік саме по елементу тексту, а не по скролбару (повзунку)
             int selIdx = LOWORD(itemInfo);
             int clickX = GET_X_LPARAM(lParam);  // отримуємо горизонтальну координату кліку (X) з lParam
+            int clickY = GET_Y_LPARAM(lParam);  // і вертикальну
+
+            RECT itemRect;   // отримуємо фізичні координати цієї конкретної картки у списку
+            SendMessage(hwnd, LB_GETITEMRECT, selIdx, (LPARAM)&itemRect);
+
+            // вираховуємо розміщення кнопки так само, як ми її малювали
+            int cardRight = itemRect.right - UI_ITEM_GAP;
+            int cardBottom = itemRect.bottom - (UI_ITEM_GAP / 2);
+            int btnRight = cardRight - 10;
+            int btnLeft = btnRight - 32;
+            int btnBottom = cardBottom - 10;
+            int btnTop = btnBottom - 32;
             
-            // якщо клік відбувся в ділянці перших 45 пікселів зліва (зона іконки шпильки)
-            if (clickX >= UI_ITEM_GAP && clickX <= (UI_ITEM_GAP + 45)) {
+            // якщо клік саме по кнопці (32x32 пікселі у кутку)
+            if (clickX >= btnLeft && clickX <= btnRight && clickY >= btnTop && clickY <= btnBottom) {
                 LRESULT itemData = SendMessage(hwnd, LB_GETITEMDATA, selIdx, 0);
                 if (itemData != LB_ERR) {
                     bool isPinned = (itemData >> 8) & 1;
@@ -1112,7 +1131,7 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 return 0; // перехопили клік, не виконуємо стандартну вставку тексту
             }
             
-            // клікнули правіше — виконуємо звичайну вставку тексту
+            // клікнули по картці — виконуємо звичайну вставку тексту
             SendMessage(hwnd, LB_SETCURSEL, selIdx, 0);
             PostMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(1, 1000), (LPARAM)hwnd);  // вставляємо при лівому кліку
         }
@@ -1256,7 +1275,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_DRAWITEM: { // кастомне малювання одного запису (округлені картки)
             DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
-            if (dis->itemID == -1) break;
+            if (dis->itemID == -1) break;  // 
 
             HDC hdc = dis->hDC;
             RECT rc = dis->rcItem;
@@ -1280,25 +1299,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             bool isPinned = (itemData != LB_ERR) ? ((itemData >> 8) & 1) : false;
 
             SetBkMode(hdc, TRANSPARENT);
+
+            wchar_t text[UI_PREVIEW_LENGTH + 20]; // малюємо текст
+            SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
+            SetTextColor(hdc, RGB(240, 240, 240));
+
+            RECT textRect = cardRect;
+            textRect.left += 14; textRect.right -= 14; // відступ на початку і в кінці на 14
+            textRect.top += 10; textRect.bottom -= 10;  // відступ згори 10
+            DrawTextW(hdc, text, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            RECT btnRect;  // малюємо кнопку піна (понад тексту, у правому нижньому кутку)
+            btnRect.right = cardRect.right - 10;          // правий відступ від краю картки
+            btnRect.left = btnRect.right - 32;            // ширина кнопки: 32px
+            btnRect.bottom = cardRect.bottom - 10;        // відступ від низу картки
+            btnRect.top = btnRect.bottom - 32;            // висота кнопки: 32px
             
-            RECT pinRect = cardRect;  // малюємо пін
-            pinRect.left += 12; pinRect.right = pinRect.left + 30;
-            pinRect.top += 12;
+            // малюємо фон самої кнопки (яскравий, якщо закріплено)
+            HBRUSH btnBrush = CreateSolidBrush(RGB(50, 50, 55));
+            HPEN btnPen = CreatePen(PS_SOLID, 1, RGB(80, 80, 85));
+            oldBrush = SelectObject(hdc, btnBrush);
+            oldPen = SelectObject(hdc, btnPen);
+            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 12, 12);  // заокруглення 12px
+            SelectObject(hdc, oldBrush); SelectObject(hdc, oldPen);
+            DeleteObject(btnBrush); DeleteObject(btnPen);
             
             // якщо запис запінений — шпилька яскрава, якщо ні — тьмяна (підказка для кліку)
             SetTextColor(hdc, isPinned ? RGB(255, 120, 50) : RGB(80, 80, 85));
             DrawTextW(hdc, L"📌", -1, &pinRect, DT_SINGLELINE | DT_NOPREFIX);
-
-            wchar_t text[UI_PREVIEW_LENGTH + 10]; // малюємо текст (зсуваємо ліву межу на 45 пікселів, звільняючи місце під шпильку)
-            SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
-            SetTextColor(hdc, RGB(240, 240, 240));
             
-            RECT textRect = cardRect;
-            textRect.left += 45; textRect.right -= 15; // зсув вправо на 45 для шпильки
-            textRect.top += 10; textRect.bottom -= 10;
-            wchar_t* drawTextPtr = text;    // якщо в UpdateListBox префікс "📌 ", треба його пропустити при малюванні тексту
-            if (wcsncmp(text, L"📌 ", 2) == 0) drawTextPtr = text + 2;
-            DrawTextW(hdc, text, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
             return TRUE;
         }
 
