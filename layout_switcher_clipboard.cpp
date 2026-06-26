@@ -36,7 +36,7 @@
 #define LARGE_TEXT_THRESHOLD (16 * 1024) // якщо скопіювали більше 16 КБ за раз — скидаємо у файл
 #define DISK_BLOCK_SIZE 16384 // 16 КБ блок на диску
 #define RAM_BLOCK_SIZE 2048   // 2 КБ розмір структури в RAM
-#define USER_KEY L"MySecretKey2026"  // увага: поки це лише ОБФУСКАЦІЯ (XOR), а не криптографічне шифрування
+#define USER_KEY L"MySecretKey2026"  // пароль для генерації SHA-256 ключа під AES-256 криптографічне шифрування
 
 #define DB_FILE_NAME L"custom_clipboard.bin"
 #define DB_FOLDER_NAME L"ClipboardData"
@@ -158,7 +158,7 @@ void InitMaps() {
 
 // =|=|= шифрування та файли =|=|=
 // портативне CNG-шифрування (AES-256-CFB + SHA-256 Key Derivation) захищає збережені тексти на диску
-void (BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
+void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
     if (size == 0) return;
 
     BCRYPT_ALG_HANDLE hHashAlg = NULL, hAesAlg = NULL;
@@ -471,6 +471,7 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
 
         // 3: якщо був хвіст Normal-тексту, записуємо його у новий офсет
         if (normalTail) {
+            SecureProcessBuffer((BYTE*)normalTail, tailBytes, targetSalt, true);     // повертаємо виклик шифрування під новий слот
             WriteFile(hFileW, normalTail, tailBytes, &written, NULL);
         }
 
@@ -609,10 +610,10 @@ void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
     wchar_t timeStr[16];
     StringCchPrintfW(timeStr, 16, L"%02d%02d%02d_%02d%02d%02d", st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     
-    // витягаємо безпечні символи тексту (до 17 символів)
-    wchar_t cleanText[19] = {0}; // 17 символів + можливе фінальне підкреслення + нуль
+    // витягаємо безпечні символи тексту (до 14 символів)
+    wchar_t cleanText[15] = {0}; // 14 символів + нуль
     int j = 0;
-    for (int i = 0; sourceText[i] != L'\0' && j < 17; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
+    for (int i = 0; sourceText[i] != L'\0' && j < 14; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
         wchar_t c = sourceText[i];
         if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { // замінюємо всі переноси та пробіли на підкреслення
             if (j > 0 && cleanText[j-1] != L'_') cleanText[j++] = L'_';
@@ -701,6 +702,19 @@ void LoadHistory() {
             if (read == RAM_BLOCK_SIZE && (unpinnedBuffer[i].dataflags & DataFlags::Used)) {
                 DWORD slotSalt = i; // !isPinned
                 SecureProcessBuffer((BYTE*)&unpinnedBuffer[i], RAM_BLOCK_SIZE, slotSalt, false);
+            }
+        }
+        for (int i = 0; i < 256; i++) {
+            LARGE_INTEGER offset = CalculateOffset(i, false);
+            SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+            ClipEntry tempEntry; // тимчасова структура
+            ReadFile(hFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
+            if (read == RAM_BLOCK_SIZE) {
+                DWORD slotSalt = i;
+                SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
+                if (tempEntry.dataflags & DataFlags::Used) {       // тепер безпечно перевіряємо прапорець
+                    unpinnedBuffer[i] = tempEntry; // записуємо валідну картку в RAM
+                }
             }
         }
         for (int i = 0; i < 256; i++) { // також тільки індексні картки (по 2 КБ) для закріплених записів
