@@ -4,6 +4,7 @@
 // кажемо Windows використовувати сучасний візуальний стиль (для віконця і кнопок)
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 #include <windows.h> // Windows API
 #include <windowsx.h> // macro APIs and control APIs
@@ -11,6 +12,11 @@
 #include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
 #include <shellapi.h> // для роботи з піктограмою в системному лотку (треї)
 #include <cstdint> // для uint
+#include <bcrypt.h>  // API (CNG) для шифрування
+
+#ifndef NT_SUCCESS  // макрос перевірки успішності функцій CNG (щоб не підмикати важкий ntstatus.h)
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
 
 // =|=|= візуальні налаштування інтерфейсу =|=|=
 #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
@@ -30,7 +36,7 @@
 #define LARGE_TEXT_THRESHOLD (16 * 1024) // якщо скопіювали більше 16 КБ за раз — скидаємо у файл
 #define DISK_BLOCK_SIZE 16384 // 16 КБ блок на диску
 #define RAM_BLOCK_SIZE 2048   // 2 КБ розмір структури в RAM
-#define OBFUSCATION_KEY L"MySecretKey2026"  // увага: поки це лише ОБФУСКАЦІЯ (XOR), а не криптографічне шифрування
+#define USER_KEY L"MySecretKey2026"  // увага: поки це лише ОБФУСКАЦІЯ (XOR), а не криптографічне шифрування
 
 #define DB_FILE_NAME L"custom_clipboard.bin"
 #define DB_FOLDER_NAME L"ClipboardData"
@@ -150,31 +156,52 @@ void InitMaps() {
     }
 }
 
-// =|=|= обфускація та файли =|=|=
-// стрим-шифр RC4. захищає збережені тексти на диску від простого перегляду.
-void XorBuffer(BYTE* buffer, DWORD size) {
-    BYTE s[256];
-    DWORD keyLen = lstrlenW(OBFUSCATION_KEY) * sizeof(wchar_t);
-    BYTE* keyBytes = (BYTE*)OBFUSCATION_KEY;
+// =|=|= шифрування та файли =|=|=
+// портативне CNG-шифрування (AES-256-CFB + SHA-256 Key Derivation) захищає збережені тексти на диску
+void (BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
+    if (size == 0) return;
 
-    for (int i = 0; i < 256; i++) s[i] = i;
-    int j = 0;
-    for (int i = 0; i < 256; i++) {
-        j = (j + s[i] + keyBytes[i % keyLen]) % 256;
-        BYTE temp = s[i]; s[i] = s[j]; s[j] = temp;
+    BCRYPT_ALG_HANDLE hHashAlg = NULL, hAesAlg = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    BYTE key[32] = { 0 }; // 32 байти для AES-256
+
+    // генерація ключа (SHA-256: password + сіль)
+    if (NT_SUCCESS(BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0))) {
+        if (NT_SUCCESS(BCryptCreateHash(hHashAlg, &hHash, NULL, 0, NULL, 0, 0))) {
+            
+            // змішуємо базовий ключ (пароль)
+            BCryptHashData(hHash, (PUCHAR)USER_KEY, lstrlenW(USER_KEY) * sizeof(wchar_t), 0);
+            BCryptHashData(hHash, (PUCHAR)&salt, sizeof(salt), 0);    // додаємо сіль (індекс комірки або час)
+            
+            BCryptFinishHash(hHash, key, sizeof(key), 0);   // отримуємо 32-байтний криптографічний ключ
+            BCryptDestroyHash(hHash);
+        }
+        BCryptCloseAlgorithmProvider(hHashAlg, 0);
     }
+    // шифрування/розшифрування (AES-256-CFB)
+    if (NT_SUCCESS(BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, NULL, 0))) {
+        
+        // (!) використовуємо режим CFB. тому що він не змінює розмір даних (немає Padding'у)
+        BCryptSetProperty(hAesAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CFB, sizeof(BCRYPT_CHAIN_MODE_CFB), 0);
 
-    int i = 0; j = 0;
-    for (DWORD k = 0; k < size; k++) {
-        i = (i + 1) % 256;
-        j = (j + s[i]) % 256;
-        BYTE temp = s[i]; s[i] = s[j]; s[j] = temp;
-        buffer[k] ^= s[(s[i] + s[j]) % 256];
+        if (NT_SUCCESS(BCryptGenerateSymmetricKey(hAesAlg, &hKey, NULL, 0, key, sizeof(key), 0))) {
+            ULONG resultLen = 0;
+            BYTE iv[16] = { 0 }; // для CFB потрібен вектор ініціалізації. ключ уже унікалізований сіллю, нульовий IV безпечний
+
+            if (isEncrypt) {   // шифруємо дані прямо в тому ж буфері (in-place)
+                BCryptEncrypt(hKey, buffer, size, NULL, iv, sizeof(iv), buffer, size, &resultLen, 0);
+            } else {       // розшифровуємо
+                BCryptDecrypt(hKey, buffer, size, NULL, iv, sizeof(iv), buffer, size, &resultLen, 0);
+            }
+            BCryptDestroyKey(hKey);
+        }
+        BCryptCloseAlgorithmProvider(hAesAlg, 0);
     }
 }
 
 // =|=|= симуляція натискань =|=|=
-// випереджаюче оголошення відміни фокусування меню після натискання Alt
+// випереджаюче оголошення скасування фокусування меню після натискання Alt
 void CancelWindowsMenuFocus();
 
 // функція змушує систему думати, що ми натиснули комбінацію (напр. Ctrl+C)
@@ -301,7 +328,10 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
         LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
         SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
        
-        WriteFile(hFile, &entry, RAM_BLOCK_SIZE, &written, NULL);  // записуємо 2 КБ (метадані + прев'ю)
+        ClipEntry diskEntry = entry;
+        DWORD slotSalt = (isPinned ? 1000 : 0) + index;
+        SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом на диск
+        WriteFile(hFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
 
         // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
         if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
@@ -309,7 +339,7 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
             BYTE* encTail = (BYTE*)HeapAlloc(GetProcessHeap(), 0, tailBytes);
             if (encTail) {
                 memcpy(encTail, fullText + 1020, tailBytes);
-                XorBuffer(encTail, tailBytes); // обфускація хвоста на диску
+                SecureProcessBuffer(encTail, tailBytes, slotSalt, true); // шифрування хвоста на диску
                 WriteFile(hFile, encTail, tailBytes, &written, NULL);
                 HeapFree(GetProcessHeap(), 0, encTail);
             }
@@ -328,8 +358,10 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
             BYTE* encBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, fullBytes);
             if (encBuffer) {
                 memcpy(encBuffer, fullText, fullBytes);
-                XorBuffer(encBuffer, fullBytes);  // шифруємо весь файл
+                DWORD fileSalt = GetTickCount(); 
+                SecureProcessBuffer(encBuffer, fullBytes, fileSalt, true);   // шифруємо весь файл
                 DWORD written;
+                WriteFile(hLargeFile, &fileSalt, sizeof(fileSalt), &written, NULL);   // зберігаємо сіль (4 байти) на початку файлу
                 WriteFile(hLargeFile, encBuffer, fullBytes, &written, NULL);
                 HeapFree(GetProcessHeap(), 0, encBuffer);
             }
@@ -410,6 +442,8 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
             if (hFileR != INVALID_HANDLE_VALUE) {
                 SetFilePointerEx(hFileR, sourceOffset, NULL, FILE_BEGIN);
                 DWORD br; ReadFile(hFileR, normalTail, tailBytes, &br, NULL); // читаємо хвіст прямо в XOR-і
+                DWORD sourceSalt = (currentlyPinned ? 1000 : 0) + realIdx;
+                SecureProcessBuffer((BYTE*)normalTail, br, sourceSalt, false); // розшифровуємо зі старого слоту
                 CloseHandle(hFileR);
             }
         }
@@ -429,7 +463,11 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
         // 2: записуємо нову комірку (метадані + прев'ю)
         LARGE_INTEGER targetOffset = CalculateOffset(targetIdx, !currentlyPinned);
         SetFilePointerEx(hFileW, targetOffset, NULL, FILE_BEGIN);
-        WriteFile(hFileW, &targetEntry, RAM_BLOCK_SIZE, &written, NULL);
+        // записуємо зашифровані метадані в новий слот цільового барабану
+        ClipEntry diskTargetEntry = targetEntry;
+        DWORD targetSalt = (!currentlyPinned ? 1000 : 0) + targetIdx;
+        SecureProcessBuffer((BYTE*)&diskTargetEntry, RAM_BLOCK_SIZE, targetSalt, true);
+        WriteFile(hFileW, &diskTargetEntry, RAM_BLOCK_SIZE, &written, NULL);
 
         // 3: якщо був хвіст Normal-тексту, записуємо його у новий офсет
         if (normalTail) {
@@ -439,7 +477,10 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
         // 4: позначаємо стару комірку на диску Empty
         LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
         SetFilePointerEx(hFileW, sourceOffset, NULL, FILE_BEGIN);
-        WriteFile(hFileW, &sourceEntry, RAM_BLOCK_SIZE, &written, NULL);
+        ClipEntry diskSourceEntry = sourceEntry;
+        DWORD sourceSalt = (currentlyPinned ? 1000 : 0) + realIdx;
+        SecureProcessBuffer((BYTE*)&diskSourceEntry, RAM_BLOCK_SIZE, sourceSalt, true);
+        WriteFile(hFileW, &diskSourceEntry, RAM_BLOCK_SIZE, &written, NULL);
 
         CloseHandle(hFileW);
     }
@@ -657,11 +698,19 @@ void LoadHistory() {
             LARGE_INTEGER offset = CalculateOffset(i, false);
             SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
             ReadFile(hFile, &unpinnedBuffer[i], RAM_BLOCK_SIZE, &read, NULL);
+            if (read == RAM_BLOCK_SIZE && (unpinnedBuffer[i].dataflags & DataFlags::Used)) {
+                DWORD slotSalt = i; // !isPinned
+                SecureProcessBuffer((BYTE*)&unpinnedBuffer[i], RAM_BLOCK_SIZE, slotSalt, false);
+            }
         }
         for (int i = 0; i < 256; i++) { // також тільки індексні картки (по 2 КБ) для закріплених записів
             LARGE_INTEGER offset = CalculateOffset(i, true);
             SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
             ReadFile(hFile, &pinnedBuffer[i], RAM_BLOCK_SIZE, &read, NULL);
+            if (read == RAM_BLOCK_SIZE && (pinnedBuffer[i].dataflags & DataFlags::Used)) {
+                DWORD slotSalt = 1000 + i; // isPinned
+                SecureProcessBuffer((BYTE*)&pinnedBuffer[i], RAM_BLOCK_SIZE, slotSalt, false);
+            }
         }
         CloseHandle(hFile);
     }
@@ -694,7 +743,8 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
             DWORD bytesToRead = (entry.textLength - 1020) * sizeof(wchar_t);
             DWORD bytesRead;
             ReadFile(hFile, targetBuffer + 1020, bytesToRead, &bytesRead, NULL);
-            XorBuffer((BYTE*)(targetBuffer + 1020), bytesRead); // знімаємо обфускацію з хвоста
+            DWORD slotSalt = (isPinned ? 1000 : 0) + index;
+            SecureProcessBuffer((BYTE*)(targetBuffer + 1020), bytesRead, slotSalt, false); // знімаємо обфускацію з хвоста
             CloseHandle(hFile);
         }
     } 
@@ -704,10 +754,12 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
         StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
         HANDLE hFile = CreateFileW(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD fileSalt = 0;
+            DWORD bytesRead = 0;
+            ReadFile(hFile, &fileSalt, sizeof(fileSalt), &bytesRead, NULL);   // читаємо унікальну сіль файлу (перші 4 байти)
             DWORD bytesToRead = entry.textLength * sizeof(wchar_t);
-            DWORD bytesRead;
             ReadFile(hFile, targetBuffer, bytesToRead, &bytesRead, NULL);
-            XorBuffer((BYTE*)targetBuffer, bytesRead); // розшифровуємо все тіло файлу
+            SecureProcessBuffer((BYTE*)targetBuffer, bytesRead, fileSalt, false);  // розшифровуємо все тіло файлу
             CloseHandle(hFile);
         } else {
             StringCchCopyW(targetBuffer, entry.textLength + 1, L"[ПОМИЛКА] Зовнішній файл не знайдено.");
@@ -1287,9 +1339,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             RECT btnRect;  // малюємо кнопку піна (понад тексту, у правому нижньому кутку)
             btnRect.right = cardRect.right - 8;          // правий відступ від краю картки
-            btnRect.left = btnRect.right - 36;            // ширина кнопки: 32px
+            btnRect.left = btnRect.right - 36;            // ширина кнопки: 36px
             btnRect.bottom = cardRect.bottom - 8;        // відступ від низу картки
-            btnRect.top = btnRect.bottom - 36;            // висота кнопки: 32px
+            btnRect.top = btnRect.bottom - 36;            // висота кнопки: 36px
             
             // малюємо фон самої кнопки (яскравий, якщо закріплено)
             HBRUSH btnBrush = CreateSolidBrush(RGB(50, 50, 55));
