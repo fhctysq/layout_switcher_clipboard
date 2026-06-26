@@ -30,9 +30,11 @@
 #define LARGE_TEXT_THRESHOLD (16 * 1024) // якщо скопіювали більше 16 КБ за раз — скидаємо у файл
 #define DISK_BLOCK_SIZE 16384 // 16 КБ блок на диску
 #define RAM_BLOCK_SIZE 2048   // 2 КБ розмір структури в RAM
+#define OBFUSCATION_KEY L"MySecretKey2026"  // увага: поки це лише ОБФУСКАЦІЯ (XOR), а не криптографічне шифрування
 
-// увага: поки це лише ОБФУСКАЦІЯ (XOR), а не криптографічне шифрування
-#define OBFUSCATION_KEY L"MySecretKey2026"
+#define DB_FILE_NAME L"custom_clipboard.bin"
+#define DB_FOLDER_NAME L"ClipboardData"
+#define DB_FOLDER_PATH L"ClipboardData\\"
 
 namespace DataFlags { // прапори даних про картку
     const uint8_t Empty     = 0;         // 0000 0000 (Комірка вільна / Tombstone)
@@ -90,11 +92,9 @@ bool ignoreClipboardUpdate = false;   // запобіжник: якщо true, п
 // === бекапи та технічні змінні ===
 wchar_t* g_SysClipboardBackup = NULL; // тимчасове сховище для справжнього буфера обміну ОС
 WNDPROC OldListBoxProc;              // попередня функція обробки списку (для підміни кліків мишею)
-int lastAltCIndex = -1;         // lastAltCCopy вказує на індекс у буфері
+int lastAltCIndex = -1;         // lastAltCIndex вказує на індекс у буфері
 bool lastAltCIsPinned = false;  // чи закріплений цей запис
-wchar_t* lastAltCCopy = NULL;   // останній текст, скопійований саме через Alt+C
-wchar_t* lastCopy = NULL;         // найновіший скопійований текст не через Alt+C
-int historyCount = 0;           // поточна кількість збережених текстів
+// wchar_t* lastCopy = NULL;         // найновіший скопійований текст не через Alt+C
 
 HHOOK g_hKeyboardHook = NULL;         // змінна для "шпигуна" за клавіатурою (глобальний хук)
 #define MSG_PROCESS_HOTKEY (WM_APP + 1) // кастомне повідомлення, виклик вікна комбінацією
@@ -287,7 +287,7 @@ void UpdateListBox() {
 void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
     
-    HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
         uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники на початку файлу (офсет 0)
         DWORD written;
@@ -320,7 +320,7 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     // якщо це великий текст, виносимо файл в окрему папку
     if (fullText && (entry.textflags & TextFlags::File) && !(entry.textflags & TextFlags::Dynamic)) {
         wchar_t filepath[MAX_PATH];
-        StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\%s", entry.fileData.fileName);
+        StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
         
         HANDLE hLargeFile = CreateFileW(filepath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hLargeFile != INVALID_HANDLE_VALUE) {
@@ -351,8 +351,8 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
         StringCchPrintfW(newFileName, 32, L"trashed_%s", entry.fileData.fileName); // нове ім'я файлу з префіксом trashed_
         
         // збираємо повні шляхи до старого та нового файлів
-        StringCchPrintfW(oldPath, MAX_PATH, L"ClipboardData\\%s", entry.fileData.fileName);
-        StringCchPrintfW(newPath, MAX_PATH, L"ClipboardData\\%s", newFileName);
+        StringCchPrintfW(oldPath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
+        StringCchPrintfW(newPath, MAX_PATH, DB_FOLDER_PATH L"%s", newFileName);
 
         if (MoveFileW(oldPath, newPath)) { // перейменовуємо файл у сховищі
             // оновлюємо ім'я в структурі, щоб не втратити зв'язок із файлом
@@ -387,7 +387,7 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
     // якщо в цільовій комірці з минулого кола лежить великий текст - файл, - видаляємо його зараз (!)
     if ((targetEntry.dataflags & DataFlags::Used) && (targetEntry.textflags & TextFlags::File)) {
         wchar_t filepath[MAX_PATH];
-        StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\%s", targetEntry.fileData.fileName);
+        StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", targetEntry.fileData.fileName);
         DeleteFileW(filepath);
     }
 
@@ -406,7 +406,7 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
             LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
             sourceOffset.QuadPart += RAM_BLOCK_SIZE; // зсув на хвіст
             
-            HANDLE hFileR = CreateFileW(L"custom_clipboard.bin", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            HANDLE hFileR = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
             if (hFileR != INVALID_HANDLE_VALUE) {
                 SetFilePointerEx(hFileR, sourceOffset, NULL, FILE_BEGIN);
                 DWORD br; ReadFile(hFileR, normalTail, tailBytes, &br, NULL); // читаємо хвіст прямо в XOR-і
@@ -418,7 +418,7 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
     sourceEntry.dataflags = DataFlags::Empty; // позначаємо перенесений запис Empty в попередньому переліку
 
     // синхронізуємо з диском (один вхід до файлу для чотирьох задач)
-    HANDLE hFileW = CreateFileW(L"custom_clipboard.bin", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFileW = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFileW != INVALID_HANDLE_VALUE) {
         DWORD written;
         
@@ -558,69 +558,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 // =|=|= робота з файлами (для великих текстів) =|=|=
-// // зберігає великий текст у файл, шифрує його та повертає "плейсхолдер"
-// bool SaveLargeText(const wchar_t* text, wchar_t* outPlaceholder) {
-//     CreateDirectoryW(L"ClipboardData", NULL); 
-//     static int counter = 0;
-//     wchar_t filepath[MAX_PATH];
-    
-//     StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\item_%u_%d.txt", GetTickCount(), ++counter);
-
-//     HANDLE hFile = CreateFileW(filepath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-//     if (hFile != INVALID_HANDLE_VALUE) {
-//         DWORD bytesSize = lstrlenW(text) * sizeof(wchar_t);
-//         BYTE* encBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, bytesSize);
-//         if (encBuffer) {
-//             memcpy(encBuffer, text, bytesSize);
-//             XorBuffer(encBuffer, bytesSize); 
-//             DWORD written;
-//             WriteFile(hFile, encBuffer, bytesSize, &written, NULL);
-//             HeapFree(GetProcessHeap(), 0, encBuffer);
-//         }
-//         CloseHandle(hFile);
-
-//         wchar_t preview[UI_PREVIEW_LENGTH + 1] = {0};
-//         wcsncpy_s(preview, UI_PREVIEW_LENGTH + 1, text, UI_PREVIEW_LENGTH);
-//         preview[UI_PREVIEW_LENGTH] = L'\0'; 
-//         for (int i = 0; i < UI_PREVIEW_LENGTH && preview[i]; ++i) {
-//             if (preview[i] == L'\r' || preview[i] == L'\n') preview[i] = L' ';
-//         }
-
-//         StringCchPrintfW(outPlaceholder, MAX_PATH + UI_PREVIEW_LENGTH + 50, L"[LARGEFILE]%s|%s", filepath, preview);
-//         return true;
-//     }
-//     return false;
-// }
-
-// // завантажує і розшифровує великий текст із файлу, якщо потрібно вставити
-// wchar_t* LoadLargeText(const wchar_t* placeholder) {
-//     const wchar_t* pipe = wcschr(placeholder, L'|');
-//     if (!pipe) return NULL;
-//     int pathLen = pipe - (placeholder + 11);
-//     wchar_t filepath[MAX_PATH] = {0};
-//     if (pathLen >= MAX_PATH) pathLen = MAX_PATH - 1; 
-//     wcsncpy_s(filepath, MAX_PATH, placeholder + 11, pathLen);
-//     filepath[pathLen] = L'\0'; 
-
-//     HANDLE hFile = CreateFileW(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-//     if (hFile != INVALID_HANDLE_VALUE) {
-//         DWORD size = GetFileSize(hFile, NULL);
-//         wchar_t* text = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, size + sizeof(wchar_t));
-//         if (text) {
-//             DWORD read;
-//             ReadFile(hFile, text, size, &read, NULL);
-//             XorBuffer((BYTE*)text, read); 
-//             text[read / sizeof(wchar_t)] = L'\0';
-//             CloseHandle(hFile);
-//             return text;
-//         }
-//         CloseHandle(hFile);
-//     }
-    
-//     wchar_t* fallback = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, 128 * sizeof(wchar_t));
-//     if (fallback) StringCchCopyW(fallback, 128, L"[ПОМИЛКА] Файл з великим текстом не знайдено.");
-//     return fallback;
-// }
 
 // функція генерує компактне ім'я для відокремлених файлів - понад 16 КБ - (формат: РРММДД_ГГХХСС_текст.bin)
 void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
@@ -695,7 +632,7 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
         entry.textflags |= TextFlags::File;
         wcsncpy_s(entry.fileData.preview, 988, text, _TRUNCATE);
         GenerateLargeFileName(entry.fileData.fileName, text);   // створюємо назву файлу
-        CreateDirectoryW(L"ClipboardData", NULL);
+        CreateDirectoryW(DB_FOLDER_NAME, NULL);
     }
 
     // синхронізуємо стан з диском
@@ -704,7 +641,7 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
 
 // функція відновлює індексну карту прев'ю після перезапуску за мілісекунди
 void LoadHistory() {
-    HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
         DWORD read;
         uint8_t heads[2] = { 255, 255 };
@@ -748,7 +685,7 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
         memcpy(targetBuffer, entry.text, 1020 * sizeof(wchar_t));
         
         // дочитуємо решту тексту ("хвіст") зі сховища за O(1)
-        HANDLE hFile = CreateFileW(L"custom_clipboard.bin", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             LARGE_INTEGER offset = CalculateOffset(index, isPinned);
             offset.QuadPart += RAM_BLOCK_SIZE; // стрибаємо повз 2 КБ картки прев'ю на початок хвоста
@@ -764,7 +701,7 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
     else if (entry.textflags & TextFlags::File) {
         // варіант В: текст великий, читаємо його з окремого зовнішнього файлу
         wchar_t filepath[MAX_PATH];
-        StringCchPrintfW(filepath, MAX_PATH, L"ClipboardData\\%s", entry.fileData.fileName);
+        StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
         HANDLE hFile = CreateFileW(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD bytesToRead = entry.textLength * sizeof(wchar_t);
@@ -866,7 +803,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                         entry.textflags = TextFlags::File;
                         wcsncpy_s(entry.fileData.preview, 988, pText, _TRUNCATE);
                         GenerateLargeFileName(entry.fileData.fileName, pText);
-                        CreateDirectoryW(L"ClipboardData", NULL);
+                        CreateDirectoryW(DB_FOLDER_NAME, NULL);
                     }
                     SaveBlockToDisk(pinnedHead, true, pText);
                     
@@ -916,7 +853,7 @@ void PasteLastAltC() {
         CloseClipboard();
         
         SendKeyCombo(VK_CONTROL, 0x56); // імітація натискання Ctrl+V
-        Sleep(50); 
+        Sleep(100); 
     }
     if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste); // чистимо оперативку після того, як ОС забрала текст
     RestoreSysClipboard(); 
@@ -954,7 +891,7 @@ void PasteFromHistory(int index) {
         CloseClipboard();
         
         SendKeyCombo(VK_CONTROL, 0x56); 
-        Sleep(50);
+        Sleep(100);
     }
     RestoreSysClipboard(); 
     ClearPendingClipboardUpdates();
@@ -1062,7 +999,7 @@ void TransformClipboardText(TransformMode mode) {
                         CloseClipboard();  // закриваємо сесію Clipboard API
 
                         SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V
-                        Sleep(50); 
+                        Sleep(60); 
                         goto cleanup;   // стрибаємо на фінальне очищення
                     } else { GlobalFree(hNewData); }  // якщо змін не було — знищуємо виділену пам'ять
                 }
@@ -1383,19 +1320,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (cmd == HotkeyCmd::Layout) { TransformClipboardText(TransformMode::Layout); }  
             else if (cmd == HotkeyCmd::Copy) { CustomCopyOrCut(0x43, true); }    
             else if (cmd == HotkeyCmd::Cut) { CustomCopyOrCut(0x58, true); }  // вирізання
-            else if (cmd == HotkeyCmd::Paste) {        // вставка
-                if (IsWindowVisible(hMainWindow)) {
-                    int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                    if (sel >= 0) PasteFromHistory(sel);
-                    else {   // якщо нічого не виділено в переліку, логіка за замовчуванням
-                        if (lastAltCCopy) PasteLastAltC();
-                        else if (historyCount > 0) PasteFromHistory(0);
+            else if (cmd == HotkeyCmd::Paste) {        // вставка з Alt+C
+                if (IsWindowVisible(hMainWindow) && SendMessage(hListBox, LB_GETCURSEL, 0, 0) >= 0) {
+                    PasteFromHistory(SendMessage(hListBox, LB_GETCURSEL, 0, 0));
+                } else {   // вікно закрите або нічого не виділено
+                    if (lastAltCIndex != -1) {
+                        PasteLastAltC(); // якщо наявний запис від Alt+C
+                    } else {   // якщо Alt+C немає, витягуємо найновіший запис через ListBox
+                        UpdateListBox(); 
+                        if (SendMessage(hListBox, LB_GETCOUNT, 0, 0) > 0) {
+                            PasteFromHistory(0);
+                        }
                     }
-                } else {  // вікно закрите. якщо є запис по Alt+C — вставляємо його, інакше — найновіший
-                    if (lastAltCCopy) PasteLastAltC();
-                    else if (historyCount > 0) PasteFromHistory(0);
                 }
-            }   
+            }
             // обробка комбінацій Alt+Win
             else if (cmd == HotkeyCmd::PinCopy) { CustomCopyOrCut(0x43, true, true); }
             else if (cmd == HotkeyCmd::PinCut) { CustomCopyOrCut(0x58, true, true); }
@@ -1417,7 +1355,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         }
                         CloseClipboard();
                         SendKeyCombo(VK_CONTROL, 0x56);
-                        Sleep(50);
+                        Sleep(100);
                     }
                     if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste);
                     RestoreSysClipboard();
