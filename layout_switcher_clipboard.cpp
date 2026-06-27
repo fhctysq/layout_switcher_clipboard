@@ -1421,7 +1421,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // малюємо фон самої кнопки (яскравий, якщо закріплено)
             SelectObject(hdc, g_brBtnNormal);
             SelectObject(hdc, g_penBtnNormal);
-            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 16, 16);  - заокруглення кнопки 16
+            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 16, 16);  // заокруглення кнопки 16
             
             // відновлюємо старі об'єкти (щоб не зламати стан контексту)
             SelectObject(hdc, oldBrush); 
