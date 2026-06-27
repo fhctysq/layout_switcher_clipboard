@@ -118,10 +118,11 @@ bool lastAltCIsPinned = false;  // чи закріплений цей запис
 HHOOK g_hKeyboardHook = NULL;         // змінна для "шпигуна" за клавіатурою (глобальний хук)
 #define MSG_PROCESS_HOTKEY (WM_APP + 1) // кастомне повідомлення, виклик вікна комбінацією
 
-// === елементи для малювання (кольори, шрифти) ===
-HBRUSH hDarkBrush = NULL; 
-HFONT hFont = NULL; 
-int g_ItemHeight = UI_ITEM_HEIGHT;
+// === кешована графіка (GDI Objects: кольори, шрифти) ===
+HBRUSH g_brMainBg = NULL, g_brCardNormal = NULL, g_brCardSelected = NULL, g_brBtnNormal = NULL;
+HPEN g_penCardNormal = NULL, g_penCardSelected = NULL, g_penBtnNormal = NULL;
+HFONT g_hFont = NULL; 
+int g_ScaledItemHeight = 90;
 
 // =|=|= структури та переліки (enums) =|=|=
 enum class TransformMode { 
