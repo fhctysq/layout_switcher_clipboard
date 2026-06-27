@@ -18,15 +18,27 @@
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 
-// =|=|= візуальні налаштування інтерфейсу =|=|=
+// =|=|= глобальні налаштування інтерфейсу =|=|=
 #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
 #define UI_WIN_HEIGHT 704       // висота головного вікна
 #define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
 #define UI_ITEM_GAP 8           // відступ між картками
-#define UI_CORNER_RADIUS 18     // радіус заокруглення кутів вікна та карток
+#define UI_CORNER_RADIUS 20     // радіус заокруглення кутів вікна та карток
 #define UI_PREVIEW_LENGTH 168   // скільки символів початку тексту показувати у прев'ю
 #define UI_HEADER_HEIGHT 32     // висота верхньої "шапки" (за яку можна тягати вікно)
 #define UI_BOTTOM_HEIGHT 32     // висота нижньої смужки для перетягування
+
+struct AppSettings {
+    int winWidth = 560;        // ширина головного вікна буфера
+    int winHeight = 704;       // висота головного вікна
+    int itemHeight = 90;       // висота однієї "картки" з текстом
+    int itemGap = 8;           // відступ між картками
+    int cornerRadius = 20;     // радіус заокруглення кутів вікна та карток
+    int uiPreviewLength = 168; // скільки символів початку тексту показувати у прев'ю
+    int headerHeight = 32;     // висота верхньої "шапки" (за яку можна тягати вікно)
+    int bottomHeight = 32;     // висота нижньої смужки для перетягування
+};
+AppSettings g_Config; // глобальний об'єкт конфігурації
 
 // =|=|= налаштування трею та іконки =|=|=
 #define WM_TRAYICON (WM_APP + 2) // кастомне повідомлення для обробки кліків у треї
@@ -82,15 +94,16 @@ struct ClipEntry {
 static_assert(sizeof(ClipEntry) == RAM_BLOCK_SIZE, "ClipEntry layout size miscalculation!");
 
 // === глобальні масиви пам'яті (1 МБ сумарно у секції .bss) ===
-ClipEntry unpinnedBuffer[256] = { 0 }; // Основний масив
-ClipEntry pinnedBuffer[256] = { 0 };   // Масив для закріплених записів
+ClipEntry unpinnedBuffer[256] = { 0 }; // основний масив
+ClipEntry pinnedBuffer[256] = { 0 };   // масив для закріплених записів
 
 // лічильники з автообертанням (автоматично переходять 255 -> 0)
 uint8_t unpinnedHead = 255; // починаємо з 255, щоб перше додавання (++head) записало в 0
 uint8_t pinnedHead = 255;
 int firstPinnedListIdx = -1; // зберігає позицію першого закріпленого запису в UI для швидкого стрибка
 
-HWND hMainWindow = NULL;              // головне вікно програми
+HWND hMainWindow = NULL;              // головне вікно програми   
+HWND hSettingsWindow = NULL;          // вікно налаштувань
 HWND hListBox = NULL;                 // елемент переліку-історії UI
 
 bool ignoreClipboardUpdate = false;   // запобіжник: якщо true, програма ігнорує копіювання (бо робить його сама)
@@ -154,6 +167,40 @@ void InitMaps() {
         eng_to_ukr[pairs[i][0]] = pairs[i][1];
         ukr_to_eng[pairs[i][1]] = pairs[i][0];
     }
+}
+
+// =|=|= управління графікою =|=|=
+void InitGraphics() {
+    HDC hdc = GetDC(NULL);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ReleaseDC(NULL, hdc);
+    
+    int fontSize = -MulDiv(13, dpiY, 96); 
+    g_ScaledItemHeight = MulDiv(g_Config.itemHeight, dpiY, 96);  
+    g_hFont = CreateFontW(fontSize, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 
+                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 
+                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    // створюємо всі пензлі та контури один раз
+    g_brMainBg = CreateSolidBrush(RGB(25, 25, 25));
+    g_brCardNormal = CreateSolidBrush(RGB(45, 45, 45));
+    g_brCardSelected = CreateSolidBrush(RGB(70, 70, 75));
+    g_brBtnNormal = CreateSolidBrush(RGB(50, 50, 55));
+    
+    g_penCardNormal = CreatePen(PS_SOLID, 1, RGB(60, 60, 60));
+    g_penCardSelected = CreatePen(PS_SOLID, 1, RGB(100, 100, 110));
+    g_penBtnNormal = CreatePen(PS_SOLID, 1, RGB(80, 80, 85));
+}
+
+void CleanupGraphics() {
+    DeleteObject(g_brMainBg); DeleteObject(g_brCardNormal); DeleteObject(g_brCardSelected); DeleteObject(g_brBtnNormal);
+    DeleteObject(g_penCardNormal); DeleteObject(g_penCardSelected); DeleteObject(g_penBtnNormal);
+    DeleteObject(g_hFont);
+}
+
+void ApplyWindowShape(HWND hwnd) {
+    HRGN hRgn = CreateRoundRectRgn(0, 0, g_Config.winWidth, g_Config.winHeight, g_Config.cornerRadius, g_Config.cornerRadius);
+    SetWindowRgn(hwnd, hRgn, TRUE);
 }
 
 // =|=|= шифрування та файли =|=|=
@@ -380,7 +427,7 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
         wchar_t oldPath[MAX_PATH];
         wchar_t newPath[MAX_PATH];
         wchar_t newFileName[32];
-        StringCchPrintfW(newFileName, 32, L"trashed_%s", entry.fileData.fileName); // нове ім'я файлу з префіксом trashed_
+        StringCchPrintfW(newFileName, 32, L"del_%s", entry.fileData.fileName); // нове ім'я файлу з префіксом del_
         
         // збираємо повні шляхи до старого та нового файлів
         StringCchPrintfW(oldPath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
@@ -471,8 +518,8 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
 
         // 3: якщо був хвіст Normal-тексту, записуємо його у новий офсет
         if (normalTail) {
-            SecureProcessBuffer((BYTE*)normalTail, tailBytes, targetSalt, true);     // повертаємо виклик шифрування під новий слот
-            WriteFile(hFileW, normalTail, tailBytes, &written, NULL);
+            SecureProcessBuffer((BYTE*)normalTail, tailBytes, targetSalt, true);  // виклик шифрування хвоста
+            WriteFile(hFileW, normalTail, tailBytes, &written, NULL);   // запис
         }
 
         // 4: позначаємо стару комірку на диску Empty
@@ -698,32 +745,27 @@ void LoadHistory() {
         for (int i = 0; i < 256; i++) {
             LARGE_INTEGER offset = CalculateOffset(i, false);
             SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
-            ReadFile(hFile, &unpinnedBuffer[i], RAM_BLOCK_SIZE, &read, NULL);
-            if (read == RAM_BLOCK_SIZE && (unpinnedBuffer[i].dataflags & DataFlags::Used)) {
-                DWORD slotSalt = i; // !isPinned
-                SecureProcessBuffer((BYTE*)&unpinnedBuffer[i], RAM_BLOCK_SIZE, slotSalt, false);
-            }
-        }
-        for (int i = 0; i < 256; i++) {
-            LARGE_INTEGER offset = CalculateOffset(i, false);
-            SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
             ClipEntry tempEntry; // тимчасова структура
             ReadFile(hFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
             if (read == RAM_BLOCK_SIZE) {
-                DWORD slotSalt = i;
+                DWORD slotSalt = i;   // !isPinned
                 SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
                 if (tempEntry.dataflags & DataFlags::Used) {       // тепер безпечно перевіряємо прапорець
                     unpinnedBuffer[i] = tempEntry; // записуємо валідну картку в RAM
                 }
             }
         }
-        for (int i = 0; i < 256; i++) { // також тільки індексні картки (по 2 КБ) для закріплених записів
+        for (int i = 0; i < 256; i++) {  // також тільки індексні картки (по 2 КБ) для закріплених записів
             LARGE_INTEGER offset = CalculateOffset(i, true);
             SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
-            ReadFile(hFile, &pinnedBuffer[i], RAM_BLOCK_SIZE, &read, NULL);
-            if (read == RAM_BLOCK_SIZE && (pinnedBuffer[i].dataflags & DataFlags::Used)) {
-                DWORD slotSalt = 1000 + i; // isPinned
-                SecureProcessBuffer((BYTE*)&pinnedBuffer[i], RAM_BLOCK_SIZE, slotSalt, false);
+            ClipEntry tempEntry; 
+            ReadFile(hFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
+            if (read == RAM_BLOCK_SIZE) {
+                DWORD slotSalt = 1000 + i;  // isPinned
+                SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
+                if (tempEntry.dataflags & DataFlags::Used) {
+                    pinnedBuffer[i] = tempEntry; // записуємо валідну картку
+                }
             }
         }
         CloseHandle(hFile);
@@ -1115,16 +1157,13 @@ void ShowClipboardUI(bool selectLast = false) {
     
     // намагаємось вивести вікно поруч з активним додатком, або на позиції курсору
     if (hActive && GetWindowRect(hActive, &rect)) {
-        x = rect.right - width - 20;
+        x = rect.right - g_Config.winWidth - 20;
         y = rect.top + 20;
     } else {
         POINT pt; GetCursorPos(&pt); x = pt.x; y = pt.y;
     }
 
-    SetWindowPos(hMainWindow, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
-    HRGN hRgn = CreateRoundRectRgn(0, 0, width, height, UI_CORNER_RADIUS, UI_CORNER_RADIUS);
-    
-    SetWindowRgn(hMainWindow, hRgn, TRUE);   
+    SetWindowPos(hMainWindow, HWND_TOPMOST, x, y, g_Config.winWidth, g_Config.winHeight, SWP_SHOWWINDOW);
     SetForegroundWindow(hMainWindow);
     SetFocus(hListBox);
 }
@@ -1150,8 +1189,8 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             SendMessage(hwnd, LB_GETITEMRECT, selIdx, (LPARAM)&itemRect);
 
             // вираховуємо розміщення кнопки так само, як ми її малювали
-            int cardRight = itemRect.right - UI_ITEM_GAP;
-            int cardBottom = itemRect.bottom - (UI_ITEM_GAP / 2);
+            int cardRight = itemRect.right - g_Config.itemGap;
+            int cardBottom = itemRect.bottom - (g_Config.itemGap / 2);
             int btnRight = cardRight - 10;
             int btnLeft = btnRight - 32;
             int btnBottom = cardBottom - 10;
@@ -1197,18 +1236,43 @@ void ManageTrayIcon(HWND hwnd, DWORD dwMessage) {
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), L"Кастомний Буфер Обміну");
     Shell_NotifyIconW(dwMessage, &nid);
 }
+// =|=|= обробник вікна налаштувань (Settings Skeleton) =|=|=
+LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE:
+            // Тут ти пізніше створиш UI елементи (кнопки, поля введення, повзунки)
+            break;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            FillRect(hdc, &ps.rcPaint, g_brMainBg);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(200, 200, 200));
+            SelectObject(hdc, g_hFont);
+            RECT rc = {20, 20, 400, 100};
+            DrawTextW(hdc, L"Вікно налаштувань (в розробці...)", -1, &rc, DT_LEFT | DT_TOP);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_CLOSE:
+            ShowWindow(hwnd, SW_HIDE); // лише ховаємо, не знищуємо
+            return 0;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
 
-// =|=|= головний обробник вікна =|=|=
+// =|=|= обробник головного вікна =|=|=
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: 
             ManageTrayIcon(hwnd, NIM_ADD); // реєструємо іконку в треї при старті
+            ApplyWindowShape(hwnd); // викликаємо лише тут (або якщо налаштування змінилися)
 
             hListBox = CreateWindowEx(0, L"LISTBOX", NULL,
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_WANTKEYBOARDINPUT | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT,
-                0, UI_HEADER_HEIGHT, UI_WIN_WIDTH, UI_WIN_HEIGHT - UI_HEADER_HEIGHT - UI_BOTTOM_HEIGHT, hwnd, (HMENU)1, NULL, NULL);
+                0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, hwnd, (HMENU)1, NULL, NULL);
             
-            SendMessage(hListBox, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);
             SetWindowTheme(hListBox, L"DarkMode_Explorer", NULL);
 
             OldListBoxProc = (WNDPROC)SetWindowLongPtr(hListBox, GWLP_WNDPROC, (LONG_PTR)ListBoxSubclassProc);
@@ -1239,11 +1303,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 pt.y = GET_Y_LPARAM(lParam);
                 ScreenToClient(hwnd, &pt);
                 
-                if (pt.y < UI_HEADER_HEIGHT) {
-                    if (pt.x >= UI_WIN_WIDTH - UI_HEADER_HEIGHT) return HTCLIENT; 
+                if (pt.y < g_Config.headerHeight) {
+                    if (pt.x >= g_Config.winWidth - g_Config.headerHeight) return HTCLIENT; 
                     return HTCAPTION; 
                 }
-                if (pt.y > UI_WIN_HEIGHT - UI_BOTTOM_HEIGHT) {
+                if (pt.y > g_Config.winHeight - g_Config.bottomHeight) {
                     return HTCAPTION; 
                 }
             }
@@ -1254,9 +1318,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             POINT pt;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            if (pt.y < UI_HEADER_HEIGHT && pt.x >= UI_WIN_WIDTH - UI_HEADER_HEIGHT) {
-                // перевірка Shift для повного закриття, інакше тільки ховаємо віконце
-                if (GetKeyState(VK_SHIFT) & 0x8000) {
+            if (pt.y < g_Config.headerHeight && pt.x >= g_Config.winWidth - g_Config.headerHeight) {
+                if (GetKeyState(VK_SHIFT) & 0x8000) {   // перевірка Shift для повного закриття, інакше тільки ховаємо віконце
                     SendMessage(hwnd, WM_CLOSE, 0, 0);
                 } else {
                     ShowWindow(hwnd, SW_HIDE);
@@ -1271,16 +1334,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, RGB(120, 120, 120));
-            SelectObject(hdc, hFont);
+            SelectObject(hdc, g_hFont);
 
-            RECT rcHeader = {0, 0, UI_WIN_WIDTH - UI_HEADER_HEIGHT, UI_HEADER_HEIGHT}; 
+            RECT rcHeader = {0, 0, g_Config.winWidth - g_Config.headerHeight, g_Config.headerHeight}; 
             DrawTextW(hdc, L"  ≡ Кастомний Буфер (Alt+Q — вихід)", -1, &rcHeader, DT_SINGLELINE | DT_VCENTER);
 
-            RECT rcClose = {UI_WIN_WIDTH - UI_HEADER_HEIGHT, 0, UI_WIN_WIDTH, UI_HEADER_HEIGHT};
+            RECT rcClose = {g_Config.winWidth - g_Config.headerHeight, 0, g_Config.winWidth, g_Config.headerHeight};
             SetTextColor(hdc, RGB(220, 110, 110)); 
             DrawTextW(hdc, L"✕", -1, &rcClose, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            RECT rcBottom = {0, UI_WIN_HEIGHT - UI_BOTTOM_HEIGHT, UI_WIN_WIDTH, UI_WIN_HEIGHT};
+            RECT rcBottom = {0, g_Config.winHeight - g_Config.bottomHeight, g_Config.winWidth, g_Config.winHeight};
             SetTextColor(hdc, RGB(100, 100, 100));
             DrawTextW(hdc, L"  ≡ Shift + Клік на ✕ — повне закриття", -1, &rcBottom, DT_SINGLELINE | DT_VCENTER);
 
@@ -1311,11 +1374,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MEASUREITEM: { // визначаємо висоту одного запису списку
             MEASUREITEMSTRUCT* mis = (MEASUREITEMSTRUCT*)lParam;
-            mis->itemHeight = g_ItemHeight; 
+            mis->itemHeight = g_ScaledItemHeight; 
             return TRUE;
         }
-
-        case WM_DRAWITEM: { // кастомне малювання одного запису (округлені картки)
+        
+        case WM_DRAWITEM: { // gdi renderer одного запису (округлені картки)
             DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
             if (dis->itemID == -1) break;  // 
 
@@ -1324,17 +1387,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             bool isSelected = (dis->itemState & ODS_SELECTED); 
 
             RECT cardRect = rc;
-            cardRect.left += UI_ITEM_GAP; cardRect.right -= UI_ITEM_GAP;
-            cardRect.top += UI_ITEM_GAP / 2; cardRect.bottom -= UI_ITEM_GAP / 2;
+            cardRect.left += g_Config.itemGap; cardRect.right -= g_Config.itemGap;
+            cardRect.top += g_Config.itemGap / 2; cardRect.bottom -= g_Config.itemGap / 2;
 
-            HBRUSH bgBrush = CreateSolidBrush(isSelected ? RGB(70, 70, 75) : RGB(45, 45, 45));
-            HPEN borderPen = CreatePen(PS_SOLID, 1, isSelected ? RGB(100, 100, 110) : RGB(60, 60, 60));
-            HGDIOBJ oldBrush = SelectObject(hdc, bgBrush);
-            HGDIOBJ oldPen = SelectObject(hdc, borderPen);
+            // обираємо пензлі з пам'яті (без створення і видалення)
+            HGDIOBJ oldBrush = SelectObject(hdc, isSelected ? g_brCardSelected : g_brCardNormal);
+            HGDIOBJ oldPen = SelectObject(hdc, isSelected ? g_penCardSelected : g_penCardNormal);
             // малювання RoundRect для фону картки
-            RoundRect(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, UI_CORNER_RADIUS, UI_CORNER_RADIUS);
-            SelectObject(hdc, oldBrush); SelectObject(hdc, oldPen);
-            DeleteObject(bgBrush); DeleteObject(borderPen);
+            RoundRect(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, g_Config.cornerRadius, g_Config.cornerRadius);
 
             // розпаковуємо дані, щоб знати стан запису
             LRESULT itemData = SendMessage(dis->hwndItem, LB_GETITEMDATA, dis->itemID, 0);
@@ -1353,18 +1413,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             RECT btnRect;  // малюємо кнопку піна (понад тексту, у правому нижньому кутку)
             btnRect.right = cardRect.right - 8;          // правий відступ від краю картки
-            btnRect.left = btnRect.right - 36;            // ширина кнопки: 36px
+            btnRect.left = btnRect.right - 38;            // ширина кнопки: 38px
             btnRect.bottom = cardRect.bottom - 8;        // відступ від низу картки
-            btnRect.top = btnRect.bottom - 36;            // висота кнопки: 36px
+            btnRect.top = btnRect.bottom - 38;            // висота кнопки: 38px
             
             // малюємо фон самої кнопки (яскравий, якщо закріплено)
-            HBRUSH btnBrush = CreateSolidBrush(RGB(50, 50, 55));
-            HPEN btnPen = CreatePen(PS_SOLID, 1, RGB(80, 80, 85));
-            oldBrush = SelectObject(hdc, btnBrush);
-            oldPen = SelectObject(hdc, btnPen);
-            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 14, 14);  // заокруглення 14px
-            SelectObject(hdc, oldBrush); SelectObject(hdc, oldPen);
-            DeleteObject(btnBrush); DeleteObject(btnPen);
+            SelectObject(hdc, g_brBtnNormal);
+            SelectObject(hdc, g_penBtnNormal);
+            RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 16, 16);  - заокруглення кнопки 16
+            
+            // відновлюємо старі об'єкти (щоб не зламати стан контексту)
+            SelectObject(hdc, oldBrush); 
+            SelectObject(hdc, oldPen);
             
             // якщо запис запінений — шпилька яскрава, якщо ні — тьмяна (підказка для кліку)
             SetTextColor(hdc, isPinned ? RGB(255, 120, 50) : RGB(80, 80, 85));
@@ -1449,11 +1509,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 } else { ShowClipboardUI(true); } 
             }
             else if (cmd == HotkeyCmd::Case) { TransformClipboardText(TransformMode::Case); }  
-            else if (cmd == HotkeyCmd::SilentCopyAll) { 
-                // замість блокуючого Sleep(150), який заморожував програму, 
-                // запускаємо таймер. програма-донор встигає відпрацювати Ctrl+A.
-                SetTimer(hwnd, 2026, 200, NULL);
-            }
+            else if (cmd == HotkeyCmd::SilentCopyAll) { SetTimer(hwnd, 2026, 200, NULL); }  // запускаємо таймер, щоб програма-донор встигла віддати Ctrl+A
             else if (cmd == HotkeyCmd::StrikeSlanted) { TransformClipboardText(TransformMode::StrikeSlanted); } 
             else if (cmd == HotkeyCmd::StrikeStraight) { TransformClipboardText(TransformMode::StrikeStraight); } 
             break;
@@ -1463,11 +1519,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HDC hdc = (HDC)wParam;
             SetBkColor(hdc, RGB(25, 25, 25));       
             SetTextColor(hdc, RGB(240, 240, 240));  
-            return (LRESULT)hDarkBrush;             
+            return (LRESULT)g_brMainBg; // глобальний кешований пензель          
         }
 
         case WM_SIZE:  // якщо вікно змінює розмір - розтягуємо список
-            MoveWindow(hListBox, 0, UI_HEADER_HEIGHT, LOWORD(lParam), HIWORD(lParam) - UI_HEADER_HEIGHT - UI_BOTTOM_HEIGHT, TRUE);
+            MoveWindow(hListBox, 0, g_Config.headerHeight, LOWORD(lParam), HIWORD(lParam) - g_Config.headerHeight - g_Config.bottomHeight, TRUE);
             break;
 
         case WM_COMMAND: // клік по елементу списку
@@ -1480,10 +1536,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (LOWORD(wParam) == VK_RETURN) {  // Enter - вставити
                 PasteFromHistory(SendMessage(hListBox, LB_GETCURSEL, 0, 0)); return -2; 
             }
-            if (LOWORD(wParam) == VK_ESCAPE) {  // Esc - закрити меню
-                ShowWindow(hwnd, SW_HIDE); return -2; 
-            }
-            
+            if (LOWORD(wParam) == VK_ESCAPE) { ShowWindow(hwnd, SW_HIDE); return -2; }  // Esc - закрити меню
             if (LOWORD(wParam) == 'P' || LOWORD(wParam) == 'p') {  // стрибок до запінених клавішею 'P'
                 if (firstPinnedListIdx != -1) {
                     SendMessage(hListBox, LB_SETCURSEL, firstPinnedListIdx, 0);
@@ -1515,11 +1568,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int curSel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
                 int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
                 if (count > 0) {
-                    if (LOWORD(wParam) == VK_DOWN) {
-                        curSel = (curSel + 1) % count;
-                    } else if (LOWORD(wParam) == VK_UP) {
-                        curSel = (curSel - 1 + count) % count;
-                    }
+                    if (LOWORD(wParam) == VK_DOWN) curSel = (curSel + 1) % count;
+                    else if (LOWORD(wParam) == VK_UP) curSel = (curSel - 1 + count) % count;
                     SendMessage(hListBox, LB_SETCURSEL, curSel, 0);
                     return -2; 
                 }
@@ -1553,9 +1603,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // якщо утиліта вже працює — знаходимо її вікно і відправляємо команду на закриття
         HWND hExistingWnd = FindWindowW(L"CustomClipboardMenu", NULL);
-        if (hExistingWnd) {
-            PostMessage(hExistingWnd, WM_CLOSE, 0, 0);
-        }
+        if (hExistingWnd) PostMessage(hExistingWnd, WM_CLOSE, 0, 0);
         CloseHandle(hMutex);
         return 0; // завершуємо цей екземпляр
     }
@@ -1571,32 +1619,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (setDpiAware) setDpiAware();
     }
 
-    hDarkBrush = CreateSolidBrush(RGB(25, 25, 25)); 
-    HDC hdc = GetDC(NULL);
-    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-    ReleaseDC(NULL, hdc);
-    
-    int fontSize = -MulDiv(13, dpiY, 96); 
-    g_ItemHeight = MulDiv(UI_ITEM_HEIGHT, dpiY, 96);  
-    hFont = CreateFontW(fontSize, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 
-                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 
-                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    InitGraphics(); // один викликлик на весь час роботи програми
 
-    WNDCLASS wc = { 0 };
+    WNDCLASS wc = { 0 };      // реєструємо головне вікно
     wc.lpfnWndProc = WndProc; 
     wc.hInstance = hInstance;
-    
     // намагаємось завантажити іконку з exe для вікна, або беремо стандартну
     wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
     if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     
     wc.lpszClassName = L"CustomClipboardMenu";
-    wc.hbrBackground = hDarkBrush; 
+    wc.hbrBackground = g_brMainBg; 
     RegisterClass(&wc);
 
     hMainWindow = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"CustomClipboardMenu", L"Буфер обміну",
-        WS_POPUP, 0, 0, UI_WIN_WIDTH, UI_WIN_HEIGHT, NULL, NULL, hInstance, NULL);
+        WS_POPUP, 0, 0, g_Config.winWidth, g_Config.winHeight, NULL, NULL, hInstance, NULL);
 
+    WNDCLASS wcSet = { 0 };   // реєструємо вікно налаштувань
+    wcSet.lpfnWndProc = SettingsWndProc; 
+    wcSet.hInstance = hInstance;
+    wcSet.hIcon = wc.hIcon;
+    wcSet.lpszClassName = L"CustomClipboardSettings";
+    wcSet.hbrBackground = g_brMainBg; 
+    RegisterClass(&wcSet);
+    
+    // створюємо вікно налаштувань, але залишаємо його прихованим
+    hSettingsWindow = CreateWindowEx(WS_EX_APPWINDOW, L"CustomClipboardSettings", L"Налаштування",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 
+        CW_USEDEFAULT, CW_USEDEFAULT, 400, 300, NULL, NULL, hInstance, NULL);
+    
     g_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
     MSG msg = { 0 };
@@ -1606,10 +1657,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     if (g_hKeyboardHook) UnhookWindowsHookEx(g_hKeyboardHook);
-    DeleteObject(hDarkBrush); DeleteObject(hFont);
+    CleanupGraphics(); // прибираємо за собою GDI ресурси
     
-    // звільнення мутексу при виході
-    CloseHandle(hMutex);
+    CloseHandle(hMutex);    // звільнення мутексу при виході
     
     return 0;
 }
