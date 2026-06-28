@@ -315,6 +315,7 @@ void FormatPreviewForUI(const wchar_t* source, wchar_t* dest); // виперед
 void UpdateListBox() {
     SendMessage(hListBox, LB_RESETCONTENT, 0, 0); 
     wchar_t display[UI_PREVIEW_LENGTH + 5];
+    wchar_t uiText[UI_PREVIEW_LENGTH + 20];
     firstPinnedListIdx = -1; // скидаємо перед перерахунком
 
     // спершу виводимо звичайні (Unpinned) записи від найновішого до найстарішого
@@ -324,7 +325,6 @@ void UpdateListBox() {
 
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
         FormatPreviewForUI(entry.text, display);
-        wchar_t uiText[UI_PREVIEW_LENGTH + 20];
         if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку
             StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
         } else {
@@ -340,7 +340,6 @@ void UpdateListBox() {
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
         FormatPreviewForUI(entry.text, display);
 
-        wchar_t uiText[UI_PREVIEW_LENGTH + 20];
         if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку і для запінених записів
             StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
         } else {
