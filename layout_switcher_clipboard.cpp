@@ -19,14 +19,14 @@
 #endif
 
 // =|=|= глобальні налаштування інтерфейсу =|=|=
-#define UI_WIN_WIDTH 560        // ширина головного вікна буфера
-#define UI_WIN_HEIGHT 704       // висота головного вікна
-#define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
-#define UI_ITEM_GAP 8           // відступ між картками
-#define UI_CORNER_RADIUS 20     // радіус заокруглення кутів вікна та карток
-#define UI_PREVIEW_LENGTH 168   // скільки символів початку тексту показувати у прев'ю
-#define UI_HEADER_HEIGHT 32     // висота верхньої "шапки" (за яку можна тягати вікно)
-#define UI_BOTTOM_HEIGHT 32     // висота нижньої смужки для перетягування
+// #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
+// #define UI_WIN_HEIGHT 704       // висота головного вікна
+// #define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
+// #define UI_ITEM_GAP 8           // відступ між картками
+// #define UI_CORNER_RADIUS 20     // радіус заокруглення кутів вікна та карток
+// #define UI_PREVIEW_LENGTH 168   // скільки символів початку тексту показувати у прев'ю
+// #define UI_HEADER_HEIGHT 32     // висота верхньої "шапки" (за яку можна тягати вікно)
+// #define UI_BOTTOM_HEIGHT 32     // висота нижньої смужки для перетягування
 
 struct AppSettings {
     int winWidth = 560;        // ширина головного вікна буфера
@@ -659,9 +659,9 @@ void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
     StringCchPrintfW(timeStr, 16, L"%02d%02d%02d_%02d%02d%02d", st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     
     // витягаємо безпечні символи тексту (до 14 символів)
-    wchar_t cleanText[15] = {0}; // 14 символів + нуль
+    wchar_t cleanText[18] = {0}; // 17 символів + нуль
     int j = 0;
-    for (int i = 0; sourceText[i] != L'\0' && j < 14; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
+    for (int i = 0; sourceText[i] != L'\0' && j < 17; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
         wchar_t c = sourceText[i];
         if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { // замінюємо всі переноси та пробіли на підкреслення
             if (j > 0 && cleanText[j-1] != L'_') cleanText[j++] = L'_';
@@ -1142,27 +1142,36 @@ void FormatPreviewForUI(const wchar_t* source, wchar_t* dest) {
 
 
 // відображає вікно історії справа вгорі активного вікна
-void ShowClipboardUI(bool selectLast = false) {
+void ShowClipboardUI(bool selectLast = false, bool fromTray = false) {
     UpdateListBox();
     
     int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
-    if (count > 0) {
-        SendMessage(hListBox, LB_SETCURSEL, selectLast ? count - 1 : 0, 0);
-    }
+    if (count > 0) { SendMessage(hListBox, LB_SETCURSEL, selectLast ? count - 1 : 0, 0); }
     
-    HWND hActive = GetForegroundWindow(); 
-    RECT rect;
-    int width = UI_WIN_WIDTH; 
-    int height = UI_WIN_HEIGHT; 
     int x = 0, y = 0;
     
-    // намагаємось вивести вікно поруч з активним додатком, або на позиції курсору
-    if (hActive && GetWindowRect(hActive, &rect)) {
-        x = rect.right - g_Config.winWidth - 20;
-        y = rect.top + 20;
-    } else {
-        POINT pt; GetCursorPos(&pt); x = pt.x; y = pt.y;
+    RECT workArea;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0); // отримуємо розмір екрану (без таскбару)
+
+    if (fromTray) {    // якщо викликано з трею — показуємо завжди в правому верхньому кутку
+        x = workArea.right - g_Config.winWidth - 20;
+        y = workArea.top + 20;
+    } else {    // намагаємось вивести вікно поруч з активним додатком, або на позиції курсору
+        HWND hActive = GetForegroundWindow(); 
+        RECT rect;
+        if (hActive && GetWindowRect(hActive, &rect)) {
+            x = rect.right - g_Config.winWidth - 20;
+            y = rect.top + 20;
+        } else {
+            POINT pt; GetCursorPos(&pt); x = pt.x; y = pt.y;
+        }
     }
+
+    // запобіжник, щоб вікно ніколи не ховалося "за екран"
+    if (x + g_Config.winWidth > workArea.right) x = workArea.right - g_Config.winWidth - 10;
+    if (y + g_Config.winHeight > workArea.bottom) y = workArea.bottom - g_Config.winHeight - 10;
+    if (x < workArea.left) x = workArea.left + 10;
+    if (y < workArea.top) y = workArea.top + 10;
 
     SetWindowPos(hMainWindow, HWND_TOPMOST, x, y, g_Config.winWidth, g_Config.winHeight, SWP_SHOWWINDOW);
     SetForegroundWindow(hMainWindow);
@@ -1171,6 +1180,27 @@ void ShowClipboardUI(bool selectLast = false) {
 
 // колбек для перехоплення кліків мишею по списку (Listbox)
 LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_MOUSEWHEEL) { // обробка скролінгу мишею
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int count = SendMessage(hwnd, LB_GETCOUNT, 0, 0);
+        if (count > 0) {
+            int curSel = SendMessage(hwnd, LB_GETCURSEL, 0, 0);
+            if (delta < 0) {
+                curSel = (curSel + 1) % count; // прокрутка вниз з переходом на початок
+            } else {
+                curSel = (curSel - 1 + count) % count; // прокрутка вгору з переходом у кінець
+            }
+            SendMessage(hwnd, LB_SETCURSEL, curSel, 0);
+        }
+        return 0; // перехоплюємо повідомлення, щоб перелік не скролився сам по собі
+    }
+    if (msg == WM_SYSKEYDOWN && (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU)) {
+        if (firstPinnedListIdx != -1) {    // якщо натиснуто Alt (у будь-якій формі), стрибаємо на Pinned
+            SendMessage(hwnd, LB_SETCURSEL, firstPinnedListIdx, 0);
+            SendMessage(hwnd, LB_SETTOPINDEX, firstPinnedListIdx, 0);
+        }
+        // навмисне не робимо return 0, щоб система не "забула", що Alt утримується
+    }
     if (msg == WM_RBUTTONDOWN) {
         DWORD itemInfo = SendMessage(hwnd, LB_ITEMFROMPOINT, 0, lParam);
         if (HIWORD(itemInfo) == 0) { 
@@ -1192,10 +1222,10 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             // вираховуємо розміщення кнопки так само, як ми її малювали
             int cardRight = itemRect.right - g_Config.itemGap;
             int cardBottom = itemRect.bottom - (g_Config.itemGap / 2);
-            int btnRight = cardRight - 10;
-            int btnLeft = btnRight - 32;
-            int btnBottom = cardBottom - 10;
-            int btnTop = btnBottom - 32;
+            int btnRight = cardRight - 8;
+            int btnLeft = btnRight - 38;
+            int btnBottom = cardBottom - 8;
+            int btnTop = btnBottom - 38;
             
             // якщо клік саме по кнопці (32x32 пікселі у кутку)
             if (clickX >= btnLeft && clickX <= btnRight && clickY >= btnTop && clickY <= btnBottom) {
@@ -1283,16 +1313,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_TRAYICON: // обробка кліків по іконці в треї
             if (lParam == WM_RBUTTONUP) {
                 POINT pt; GetCursorPos(&pt);
-                HMENU hMenu = CreatePopupMenu();
-                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, 1, L"Вихід");
+                HMENU hMenu = CreatePopupMenu();     // створюємо меню трею
+                AppendMenuW(hMenu, MF_STRING, 2, L"Налаштування");     // додавання пунктів меню
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenuW(hMenu, MF_STRING, 1, L"Вихід");
                 
                 SetForegroundWindow(hwnd); // фокус, щоб меню коректно закривалось при кліку повз
                 int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
                 DestroyMenu(hMenu);
                 
                 if (cmd == 1) SendMessage(hwnd, WM_CLOSE, 0, 0);
-            } else if (lParam == WM_LBUTTONDBLCLK) {
-                ShowClipboardUI(false);
+                else if (cmd == 2) {
+                    // показуємо вікно налаштувань по центру екрану
+                    SetWindowPos(hSettingsWindow, HWND_TOP, 0, 0, 400, 300, SWP_NOMOVE | SWP_SHOWWINDOW);
+                }
+            } else if (lParam == WM_LBUTTONUP) { // клік для відображення віконця
+                ShowClipboardUI(false, true); // передаємо прапорець fromTray
             }
             break;
 
