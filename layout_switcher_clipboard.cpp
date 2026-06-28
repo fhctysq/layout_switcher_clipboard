@@ -145,7 +145,7 @@ wchar_t ukr_to_eng[65535];
 
 // ініціюємо словник парами символів для перекладу англійська <-> українська
 void InitMaps() {
-    const wchar_t pairs[][2] = {
+    const wchar_t pairs[][2] = { 
         { L'`', L'\''}, { L'~', L'₴' }, { L'@', L'"' }, { L'#', L'№' },
         { L'$', L';' }, { L'^', L':' }, { L'&', L'?' },
         { L'q', L'й' }, { L'w', L'ц' }, { L'e', L'у' }, { L'r', L'к' }, { L't', L'е' },
@@ -163,8 +163,8 @@ void InitMaps() {
         { L'Z', L'Я' }, { L'X', L'Ч' }, { L'C', L'С' }, { L'V', L'М' }, { L'B', L'И' },
         { L'N', L'Т' }, { L'M', L'Ь' }, { L'<', L'Б' }, { L'>', L'Ю' }, { L'?', L',' }
     };
-    int count = sizeof(pairs) / sizeof(pairs[0]);
-    for (int i = 0; i < count; ++i) {
+    int count = sizeof(pairs) / sizeof(pairs[0]); // рахуємо кількість пар, щоб знати, скільки елементів обробити
+    for (int i = 0; i < count; ++i) {  // пробігаємо циклом по переліку
         eng_to_ukr[pairs[i][0]] = pairs[i][1];
         ukr_to_eng[pairs[i][1]] = pairs[i][0];
     }
@@ -207,8 +207,8 @@ void ApplyWindowShape(HWND hwnd) {
 // =|=|= шифрування та файли =|=|=
 // портативне CNG-шифрування (AES-256-CFB + SHA-256 Key Derivation) захищає збережені тексти на диску
 void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
-    if (size == 0) return;
-
+    if (size == 0) return;  // якщо порожньо - нічого не робимо
+    // оголошуємо змінні для криптографічних інтерфейсів windows (cng)
     BCRYPT_ALG_HANDLE hHashAlg = NULL, hAesAlg = NULL;
     BCRYPT_HASH_HANDLE hHash = NULL;
     BCRYPT_KEY_HANDLE hKey = NULL;
@@ -218,12 +218,11 @@ void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
     if (NT_SUCCESS(BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0))) {
         if (NT_SUCCESS(BCryptCreateHash(hHashAlg, &hHash, NULL, 0, NULL, 0, 0))) {
             
-            // змішуємо базовий ключ (пароль)
-            BCryptHashData(hHash, (PUCHAR)USER_KEY, lstrlenW(USER_KEY) * sizeof(wchar_t), 0);
+            BCryptHashData(hHash, (PUCHAR)USER_KEY, lstrlenW(USER_KEY) * sizeof(wchar_t), 0); // додаємо пароль до хешу
             BCryptHashData(hHash, (PUCHAR)&salt, sizeof(salt), 0);    // додаємо сіль (індекс комірки або час)
             
             BCryptFinishHash(hHash, key, sizeof(key), 0);   // отримуємо 32-байтний криптографічний ключ
-            BCryptDestroyHash(hHash);
+            BCryptDestroyHash(hHash);   // закриваємо хеш-об'єкт
         }
         BCryptCloseAlgorithmProvider(hHashAlg, 0);
     }
@@ -233,16 +232,16 @@ void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
         // (!) використовуємо режим CFB. тому що він не змінює розмір даних (немає Padding'у)
         BCryptSetProperty(hAesAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CFB, sizeof(BCRYPT_CHAIN_MODE_CFB), 0);
 
-        if (NT_SUCCESS(BCryptGenerateSymmetricKey(hAesAlg, &hKey, NULL, 0, key, sizeof(key), 0))) {
+        if (NT_SUCCESS(BCryptGenerateSymmetricKey(hAesAlg, &hKey, NULL, 0, key, sizeof(key), 0))) {   // створюємо симетричний ключ                
             ULONG resultLen = 0;
             BYTE iv[16] = { 0 }; // для CFB потрібен вектор ініціалізації. ключ уже унікалізований сіллю, нульовий IV безпечний
 
-            if (isEncrypt) {   // шифруємо дані прямо в тому ж буфері (in-place)
+            if (isEncrypt) {   // якщо isencrypt = true, шифруємо дані прямо в тому ж буфері (in-place)
                 BCryptEncrypt(hKey, buffer, size, NULL, iv, sizeof(iv), buffer, size, &resultLen, 0);
-            } else {       // розшифровуємо
+            } else {       // якщо ні — розшифровуємо
                 BCryptDecrypt(hKey, buffer, size, NULL, iv, sizeof(iv), buffer, size, &resultLen, 0);
             }
-            BCryptDestroyKey(hKey);
+            BCryptDestroyKey(hKey);   // знищуємо ключ, щоб звільнити пам'ять
         }
         BCryptCloseAlgorithmProvider(hAesAlg, 0);
     }
@@ -357,11 +356,11 @@ void UpdateListBox() {
 
 // =|=|= управління історіює та видаленими записами =|=|=
 
-// функція записує блок (і за потреби хвіст або зовнішній файл)
+// функція записує у сховище блок (метадані + текст) і за потреби хвіст або зовнішній файл
 void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
     
-    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);  // відкриваємо основний файл
     if (hFile != INVALID_HANDLE_VALUE) {
         uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники на початку файлу (офсет 0)
         DWORD written;
@@ -375,44 +374,44 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
         LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
         SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
        
-        ClipEntry diskEntry = entry;
+        ClipEntry diskEntry = entry;  // створюємо копію даних для шифрування
         DWORD slotSalt = (isPinned ? 1000 : 0) + index;
-        SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом на диск
+        SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом
         WriteFile(hFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
 
         // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
         if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
             DWORD tailBytes = (entry.textLength - 1020) * sizeof(wchar_t);
-            BYTE* encTail = (BYTE*)HeapAlloc(GetProcessHeap(), 0, tailBytes);
+            BYTE* encTail = (BYTE*)HeapAlloc(GetProcessHeap(), 0, tailBytes); // тимчасово виділяємо пам'ять під хвіст
             if (encTail) {
                 memcpy(encTail, fullText + 1020, tailBytes);
                 SecureProcessBuffer(encTail, tailBytes, slotSalt, true); // шифрування хвоста на диску
-                WriteFile(hFile, encTail, tailBytes, &written, NULL);
+                WriteFile(hFile, encTail, tailBytes, &written, NULL); // дописуємо у файл за блоком метаданих
                 HeapFree(GetProcessHeap(), 0, encTail);
             }
         }
-        CloseHandle(hFile);
+        CloseHandle(hFile);  // закриваємо файл
     }
 
     // якщо це великий текст, виносимо файл в окрему папку
     if (fullText && (entry.textflags & TextFlags::File) && !(entry.textflags & TextFlags::Dynamic)) {
         wchar_t filepath[MAX_PATH];
         StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
-        
+        // створюємо новий окремий файл
         HANDLE hLargeFile = CreateFileW(filepath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hLargeFile != INVALID_HANDLE_VALUE) {
             DWORD fullBytes = entry.textLength * sizeof(wchar_t);
             BYTE* encBuffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, fullBytes);
             if (encBuffer) {
                 memcpy(encBuffer, fullText, fullBytes);
-                DWORD fileSalt = GetTickCount(); 
+                DWORD fileSalt = GetTickCount();  // генеруємо сіль
                 SecureProcessBuffer(encBuffer, fullBytes, fileSalt, true);   // шифруємо весь файл
                 DWORD written;
-                WriteFile(hLargeFile, &fileSalt, sizeof(fileSalt), &written, NULL);   // зберігаємо сіль (4 байти) на початку файлу
+                WriteFile(hLargeFile, &fileSalt, sizeof(fileSalt), &written, NULL);  // зберігаємо сіль (4 байти) на початку файлу
                 WriteFile(hLargeFile, encBuffer, fullBytes, &written, NULL);
-                HeapFree(GetProcessHeap(), 0, encBuffer);
+                HeapFree(GetProcessHeap(), 0, encBuffer);   // звільняємо пам'ять
             }
-            CloseHandle(hLargeFile);
+            CloseHandle(hLargeFile);  // закриваємо файл
         }
     }
 }
