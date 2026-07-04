@@ -547,21 +547,23 @@ void CancelWindowsMenuFocus() {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam;
+        if (pKeyBoard->flags & LLKHF_INJECTED) {   // ігноруємо синтетичні події (від нашого SendInput) для запобігання race conditions
+            return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+        }
         bool isKeyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         bool isKeyUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
         
-        bool isLeftAltPressed = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
+        bool isLeftAltPressed = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;  // читаємо стан клавіш-модифікаторів в обхід асинхронної черги повідомлень
         bool isRightAltPressed = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
         bool isCtrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
         // відстеження CTRL+A
-        static bool ctrlA_handled = false;
+        static bool ctrlA_handled = false;  // запобігає спаму повідомлень при утримуванні клавіші 'A'
         if (pKeyBoard->vkCode == 'A') {
             if (isKeyDown) {
                 if (isCtrlPressed && !isLeftAltPressed && !isRightAltPressed) {
                     if (!ctrlA_handled) {
-                        ctrlA_handled = true;
-                        // сигналізуємо системі про натиснутий Ctrl+A.
+                        ctrlA_handled = true;   // сигналізуємо системі про натиснутий Ctrl+A
                         PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::SilentCopyAll), 0);
                     }
                 }
@@ -591,11 +593,11 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                             
                             UpdateListBox(); // оновлюємо UI та зберігаємо виділення на тій самій позиції
                             int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
-                            if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);
+                            if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);  // коригуємо індекс виділення, якщо елемент був останнім
                         }
                     }
                     CancelWindowsMenuFocus();
-                    return 1; // блокуємо подальше спливання клавіш в ОС
+                    return 1; // блокуємо подію: Win/Alt не дійдуть до ОС
                 }
             }
             if (pKeyBoard->vkCode == VK_PAUSE) {
@@ -848,7 +850,10 @@ void BackupSysClipboard() {
 // відновлюємо системний буфер обміну після роботи
 void RestoreSysClipboard() {
     if (OpenClipboard(NULL)) {  // відкриваємо системний буфер
-        EmptyClipboard();  // очищуємо його (тепер наше вікно власник буфера)
+        if (!EmptyClipboard()) {  // очищуємо його (тепер наше вікно власник буфера)
+            CloseClipboard();
+            return;  // але якщо ОС не дозволила очистити буфер, негайно виходимо без видалення бекапу
+        }
         if (g_SysClipboardBackup) {
             size_t bytes = (lstrlenW(g_SysClipboardBackup) + 1) * sizeof(wchar_t); // обчислюємо розмір бекапу
             HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);  // для системи пам'ять буфера має бути виділена GlobalAlloc
@@ -948,7 +953,10 @@ void PasteLastAltC() {
     BackupSysClipboard();  // бекапимо системний Ctrl+C
 
     if (textToPaste && OpenClipboard(NULL)) {
-        EmptyClipboard();
+        if (!EmptyClipboard()) {  // якщо ОС відмовила в очищенні, скасовуємо, щоб не надіслати помилковий Ctrl+V
+            CloseClipboard();
+            goto cleanup; 
+        }
         size_t cch = lstrlenW(textToPaste) + 1;
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
         if (hData) {
@@ -962,10 +970,11 @@ void PasteLastAltC() {
         SendKeyCombo(VK_CONTROL, 0x56); // імітація натискання Ctrl+V
         Sleep(100); 
     }
+cleanup:  // гарантована деініціалізація та відновлення стану хуків при будь-якому результаті транзакції
     if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste); // чистимо оперативку після того, як ОС забрала текст
-    RestoreSysClipboard(); 
-    ClearPendingClipboardUpdates();
-    ignoreClipboardUpdate = false;
+    RestoreSysClipboard();  // повертаємо стан системного буфера
+    ClearPendingClipboardUpdates();  // чистимо чергу повідомлень ОС
+    ignoreClipboardUpdate = false;  // повертаємо хук буфера
 }
 // вставка конкретного тексту з історії (вибір через віконце)
 void PasteFromHistory(int index) {
@@ -986,7 +995,10 @@ void PasteFromHistory(int index) {
 
     wchar_t* textToPaste = LoadTextByRealIndex(realIdx, isPinned);
     if (textToPaste && OpenClipboard(NULL)) {
-        EmptyClipboard();
+        if (!EmptyClipboard()) {
+            CloseClipboard();
+            return; // перериваємо логіку, щоб не виконати SendKeyCombo з Ctrl+V
+        }
         size_t cch = lstrlenW(textToPaste) + 1;
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
         if (hData) {
@@ -1100,13 +1112,18 @@ void TransformClipboardText(TransformMode mode) {
                                 PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)targetHKL); 
                             }
                         }
-                        EmptyClipboard();  // очищуємо буфер обміну
+                        if (!EmptyClipboard()) {  // очищуємо буфер обміну
+                            GlobalFree(hNewData); // знищуємо новий рядок, бо ОС відмовилась його прийняти
+                            GlobalUnlock(hData);  // розблоковуємо оригінальний буфер
+                            CloseClipboard();     // закриваємо сесію
+                            goto cleanup;         // і виходимо, щоб не натиснути Ctrl+V (SendKeyCombo)
+                        }
                         SetClipboardData(CF_UNICODETEXT, hNewData);  // віддаємо ОС блок даних
                         GlobalUnlock(hData);  // розблоковуємо системний буфер обміну
                         CloseClipboard();  // закриваємо сесію Clipboard API
 
-                        SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V
-                        Sleep(60); 
+                        SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V тільки якщо буфер оновлено
+                        Sleep(80); 
                         goto cleanup;   // стрибаємо на фінальне очищення
                     } else { GlobalFree(hNewData); }  // якщо змін не було — знищуємо виділену пам'ять
                 }
@@ -1498,26 +1515,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // обробка комбінацій Alt+Win
             else if (cmd == HotkeyCmd::PinCopy) { CustomCopyOrCut(0x43, true, true); }
             else if (cmd == HotkeyCmd::PinCut) { CustomCopyOrCut(0x58, true, true); }
-            else if (cmd == HotkeyCmd::PinPaste) {
-                // вставка останнього саме закріпленого запису (шукаємо останній Used у pinned буфері)
+            else if (cmd == HotkeyCmd::PinPaste) {    // вставка останнього саме закріпленого запису (шукаємо останній Used у pinned буфері)
                 if (pinnedBuffer[pinnedHead].dataflags & DataFlags::Used) {
                     ignoreClipboardUpdate = true;
                     BackupSysClipboard();
                     wchar_t* textToPaste = LoadTextByRealIndex(pinnedHead, true);
                     if (textToPaste && OpenClipboard(NULL)) {
-                        EmptyClipboard();
-                        size_t cch = lstrlenW(textToPaste) + 1;
-                        HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
-                        if (hData) {
-                            wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
-                            StringCchCopyW(pDest, cch, textToPaste);
-                            GlobalUnlock(hData);
-                            SetClipboardData(CF_UNICODETEXT, hData);
+                        if (EmptyClipboard()) {  // перевіряємо успішність очищення перед виділенням пам'яті
+                            size_t cch = lstrlenW(textToPaste) + 1;
+                            HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
+                            if (hData) {
+                                wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
+                                StringCchCopyW(pDest, cch, textToPaste);
+                                GlobalUnlock(hData);
+                                SetClipboardData(CF_UNICODETEXT, hData);
+                            }
+                            CloseClipboard();
+                            SendKeyCombo(VK_CONTROL, 0x56);
+                            Sleep(100);
+                        } else {   // збій EmptyClipboard: від'єднуємося та оминаємо імітацію натискання Ctrl+V
+                            CloseClipboard();
                         }
-                        CloseClipboard();
-                        SendKeyCombo(VK_CONTROL, 0x56);
-                        Sleep(100);
-                    }
+                    }  // блок гарантованого вивільнення ресурсів потоку
                     if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste);
                     RestoreSysClipboard();
                     ClearPendingClipboardUpdates();
