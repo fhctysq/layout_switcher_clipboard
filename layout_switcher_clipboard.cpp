@@ -708,12 +708,12 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     entry.dataflags = DataFlags::Used | extraDataFlags;
     entry.textflags = TextFlags::None | extraTextFlags;
 
-    // сортування за розміром (межа 16 КБ в байтах = 8192 символи wchar_t)
+    // сортування за розміром (межа 16 КБ в байтах після врахування голови = 8188 символи wchar_t)
     if (len <= 1020) {
         entry.textflags |= TextFlags::Small;
         wcsncpy_s(entry.text, 1020, text, _TRUNCATE);
     } 
-    else if (len <= 8192) { 
+    else if (len <= 8188) { 
         entry.textflags |= TextFlags::Normal;
         // копіюємо перші 1020 символів як inline-прев'ю (затре reserved поля на диску, що безпечно)
         wcsncpy_s(entry.text, 1020, text, _TRUNCATE); 
@@ -908,7 +908,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                     if (len <= 1020) {
                         entry.textflags = TextFlags::Small;
                         wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
-                    } else if (len <= 8192) {
+                    } else if (len <= 8188) {
                         entry.textflags = TextFlags::Normal;
                         wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
                     } else {
