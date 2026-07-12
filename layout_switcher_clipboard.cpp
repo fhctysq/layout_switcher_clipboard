@@ -323,7 +323,7 @@ void UpdateListBox() {
         ClipEntry& entry = unpinnedBuffer[realIdx];
 
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
-        FormatPreviewForUI(entry.text, display);
+        FormatPreviewForUI(entry.text, entry.textLength, display);
         if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку
             StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
         } else {
@@ -337,7 +337,7 @@ void UpdateListBox() {
         ClipEntry& entry = pinnedBuffer[realIdx];
         
         if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
-        FormatPreviewForUI(entry.text, display);
+        FormatPreviewForUI(entry.text, entry.textLength, display);
 
         if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку і для запінених записів
             StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
@@ -690,7 +690,7 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     // дедуплікація: ігноруємо текст, якщо він ідентичний попередньому
     ClipEntry& lastEntry = unpinnedBuffer[unpinnedHead];
     if ((lastEntry.dataflags & DataFlags::Used) && lastEntry.textLength == len) {
-        int checkLen = (len < 1020) ? len : 988;
+        int checkLen = (len < 1020) ? len : 1020;  // порівнюємо всі 1020 символів
         if (wcsncmp(lastEntry.text, text, checkLen) == 0) return; 
     }
 
@@ -711,16 +711,15 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     // сортування за розміром (межа 16 КБ в байтах після врахування голови = 8188 символи wchar_t)
     if (len <= 1020) {
         entry.textflags |= TextFlags::Small;
-        wcsncpy_s(entry.text, 1020, text, _TRUNCATE);
+        wmemcpy(entry.text, text, len);  // копіюємо рівно len символів
     } 
     else if (len <= 8188) { 
         entry.textflags |= TextFlags::Normal;
-        // копіюємо перші 1020 символів як inline-прев'ю (затре reserved поля на диску, що безпечно)
-        wcsncpy_s(entry.text, 1020, text, _TRUNCATE); 
+        wmemcpy(entry.text, text, 1020); // копіюємо перші 1020 символів як inline-прев'ю (затре reserved поля на диску, що безпечно)
     } 
     else {
         entry.textflags |= TextFlags::File;
-        wcsncpy_s(entry.fileData.preview, 988, text, _TRUNCATE);
+        wmemcpy(entry.fileData.preview, text, 988);
         GenerateLargeFileName(entry.fileData.fileName, text);   // створюємо назву файлу
         CreateDirectoryW(DB_FOLDER_NAME, NULL);
     }
@@ -907,13 +906,13 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                     
                     if (len <= 1020) {
                         entry.textflags = TextFlags::Small;
-                        wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
+                        wmemcpy(entry.text, pText, len);
                     } else if (len <= 8188) {
                         entry.textflags = TextFlags::Normal;
-                        wcsncpy_s(entry.text, 1020, pText, _TRUNCATE);
+                        wmemcpy(entry.text, text, 1020);  // копіюємо рівно 1020 символів
                     } else {
                         entry.textflags = TextFlags::File;
-                        wcsncpy_s(entry.fileData.preview, 988, pText, _TRUNCATE);
+                        wmemcpy(entry.fileData.preview, pText, 988);
                         GenerateLargeFileName(entry.fileData.fileName, pText);
                         CreateDirectoryW(DB_FOLDER_NAME, NULL);
                     }
@@ -1143,12 +1142,12 @@ cleanup:
 // допоміжна функція: готує текст для відображення в меню, очищуючи його від переносів рядків (\n -> _)
 void FormatPreviewForUI(const wchar_t* source, wchar_t* dest) {
     int j = 0;
-    for (int k = 0; source[k] != L'\0' && j < UI_PREVIEW_LENGTH; k++) {
+    for (int k = 0; k < sourceLen && j < UI_PREVIEW_LENGTH; k++) {
         if (source[k] == L'\r') continue; // ігноруємо переміщення курсора на початок поточного рядка 
         if (source[k] == L'\n') { dest[j++] = L' '; continue; }  // замінюємо переноси на пробіли
         dest[j++] = source[k];
     }
-    if (lstrlenW(source) > UI_PREVIEW_LENGTH && j <= UI_PREVIEW_LENGTH) {
+    if (sourceLen > UI_PREVIEW_LENGTH && j <= UI_PREVIEW_LENGTH) {
         StringCchCopyW(dest + j, (UI_PREVIEW_LENGTH + 5) - j, L"..."); // якщо текст більший ліміту — додаємо три крапки
     } else {
         dest[j] = L'\0';
