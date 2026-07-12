@@ -1310,15 +1310,15 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 // =|=|= обробник головного вікна =|=|=
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_CREATE: 
+        case WM_CREATE:  // cтворення вікна та елементів (меню, кнопки, список)  
             ManageTrayIcon(hwnd, NIM_ADD); // реєструємо іконку в треї при старті
             ApplyWindowShape(hwnd); // викликаємо лише тут (або якщо налаштування змінилися)
 
-            hListBox = CreateWindowEx(0, L"LISTBOX", NULL,
+            hListBox = CreateWindowEx(0, L"LISTBOX", NULL, 
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_WANTKEYBOARDINPUT | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT,
                 0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, hwnd, (HMENU)1, NULL, NULL);
             
-            SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+            SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);    // перелік повідомлень з кастомним виглядом
             SetWindowTheme(hListBox, L"DarkMode_Explorer", NULL);
 
             OldListBoxProc = (WNDPROC)SetWindowLongPtr(hListBox, GWLP_WNDPROC, (LONG_PTR)ListBoxSubclassProc);
