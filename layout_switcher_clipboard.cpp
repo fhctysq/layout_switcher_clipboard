@@ -9,10 +9,11 @@
 #include <windows.h> // Windows API
 #include <windowsx.h> // macro APIs and control APIs
 #include <uxtheme.h> // для доступу до системної теми
-#include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
 #include <shellapi.h> // для роботи з піктограмою в системному лотку (треї)
-#include <cstdint> // для uint
 #include <bcrypt.h>  // API (CNG) для шифрування
+#include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
+#include <cstdint>  // для uint
+#include <wchar.h>  // для wmemcpy
 
 #ifndef NT_SUCCESS  // макрос перевірки успішності функцій CNG (щоб не підмикати важкий ntstatus.h)
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -308,7 +309,7 @@ LARGE_INTEGER CalculateOffset(uint8_t index, bool isPinned) {
     return offset;
 }
 
-void FormatPreviewForUI(const wchar_t* source, wchar_t* dest); // випереджаюче оголошення для UpdateListBox
+void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest); // випереджаюче оголошення для UpdateListBox
 
 // оновлює список текстів у вікні UI, відображаючи тільки активні записи з урахуванням Pinned і Unpinned масивів
 void UpdateListBox() {
@@ -909,7 +910,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                         wmemcpy(entry.text, pText, len);
                     } else if (len <= 8188) {
                         entry.textflags = TextFlags::Normal;
-                        wmemcpy(entry.text, text, 1020);  // копіюємо рівно 1020 символів
+                        wmemcpy(entry.text, pText, 1020);  // копіюємо рівно 1020 символів
                     } else {
                         entry.textflags = TextFlags::File;
                         wmemcpy(entry.fileData.preview, pText, 988);
@@ -1140,7 +1141,7 @@ cleanup:
 
 // =|=|= інтерфейс та графіка =|=|=
 // допоміжна функція: готує текст для відображення в меню, очищуючи його від переносів рядків (\n -> _)
-void FormatPreviewForUI(const wchar_t* source, wchar_t* dest) {
+void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest) {
     int j = 0;
     for (int k = 0; k < sourceLen && j < UI_PREVIEW_LENGTH; k++) {
         if (source[k] == L'\r') continue; // ігноруємо переміщення курсора на початок поточного рядка 
