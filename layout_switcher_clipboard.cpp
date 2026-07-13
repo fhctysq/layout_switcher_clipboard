@@ -55,6 +55,9 @@ AppSettings g_Config; // глобальний об'єкт конфігураці
 #define DB_FOLDER_NAME L"ClipboardData"
 #define DB_FOLDER_PATH L"ClipboardData\\"
 
+// === синхронізація доступу до даних ===
+CRITICAL_SECTION g_DataLock;
+
 namespace DataFlags { // прапори даних про картку
     const uint8_t Empty     = 0;         // 0000 0000 (Комірка вільна / Tombstone)
     const uint8_t Used      = 1 << 0;    // 0000 0001 (Запис активний)
@@ -313,6 +316,7 @@ void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest); //
 
 // оновлює список текстів у вікні UI, відображаючи тільки активні записи з урахуванням Pinned і Unpinned масивів
 void UpdateListBox() {
+    EnterCriticalSection(&g_DataLock); // блокуємо дані
     SendMessage(hListBox, LB_RESETCONTENT, 0, 0); 
     wchar_t display[UI_PREVIEW_LENGTH + 5];
     wchar_t uiText[UI_PREVIEW_LENGTH + 20];
@@ -353,6 +357,7 @@ void UpdateListBox() {
             firstPinnedListIdx = static_cast<int>(listItemIdx);
         }
     }
+    LeaveCriticalSection(&g_DataLock); // знімаємо блокування даних
 }
 
 // =|=|= управління історіює та видаленими записами =|=|=
@@ -419,8 +424,12 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
 
 // функція видаляє картки - переміщує запис в кошик (Tombstoning) - за справжнім індексом буфера
 void RemoveByRealIndex(uint8_t index, bool isPinned) {
+    EnterCriticalSection(&g_DataLock); // блокуємо дані
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index];
-    if (!(entry.dataflags & DataFlags::Used)) return; // якщо запис уже порожній або затомбстонений — нічого не робимо
+    if (!(entry.dataflags & DataFlags::Used)) {  // якщо запис уже порожній або затомбстонений — нічого не робимо
+        LeaveCriticalSection(&g_DataLock);  // відпускаємо лок перед виходом
+        return; 
+    }
 
     // якщо це великий текст — перейменовуємо його файл під кошик
     if (entry.textflags & TextFlags::File) {
@@ -445,6 +454,7 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
     if (lastAltCIndex == index && lastAltCIsPinned == isPinned) {
         lastAltCIndex = -1;
     }
+    LeaveCriticalSection(&g_DataLock); // знімаємо блокування даних
 
     SaveBlockToDisk(index, isPinned, NULL); // зберігаємо оновлену затомбстонену картку на диск
 }
@@ -452,9 +462,13 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
 // =|=|= обробка закріплених записів =|=|=
 // функція переносить запис між двома барабанами (звичайного і закріпленого)
 void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
+    EnterCriticalSection(&g_DataLock); // блокуємо дані
     // визначаємо джерело (звідки беремо)
     ClipEntry& sourceEntry = currentlyPinned ? pinnedBuffer[realIdx] : unpinnedBuffer[realIdx];
-    if (!(sourceEntry.dataflags & DataFlags::Used)) return;
+    if (!(sourceEntry.dataflags & DataFlags::Used)) {
+        LeaveCriticalSection(&g_DataLock); // відпускаємо лок перед виходом
+        return;
+    }
 
     uint8_t& targetHead = currentlyPinned ? unpinnedHead : pinnedHead; // і куди переносимо)
     ClipEntry* targetBuffer = currentlyPinned ? unpinnedBuffer : pinnedBuffer;
@@ -498,7 +512,15 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
 
     sourceEntry.dataflags = DataFlags::Empty; // позначаємо перенесений запис Empty в попередньому переліку
 
-    // синхронізуємо з диском (один вхід до файлу для чотирьох задач)
+    // робимо локальні копії станів для безпечного запису на диск поза локом
+    ClipEntry diskTargetEntry = targetEntry;
+    ClipEntry diskSourceEntry = sourceEntry;
+    uint8_t currentUnpinnedHead = unpinnedHead;
+    uint8_t currentPinnedHead = pinnedHead;
+
+    LeaveCriticalSection(&g_DataLock); // знімаємо блокування, тексти в RAM вже консистентні
+
+    // безпечно синхронізуємо з диском (один вхід до файлу для чотирьох задач)
     HANDLE hFileW = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFileW != INVALID_HANDLE_VALUE) {
         DWORD written;
@@ -688,15 +710,19 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     uint32_t len = lstrlenW(text);
     if (len == 0) return; // вихід, якщо новий "текст" порожній
 
+    EnterCriticalSection(&g_DataLock); // блокуємо доступ до даних
+
     // дедуплікація: ігноруємо текст, якщо він ідентичний попередньому
     ClipEntry& lastEntry = unpinnedBuffer[unpinnedHead];
     if ((lastEntry.dataflags & DataFlags::Used) && lastEntry.textLength == len) {
         int checkLen = (len < 1020) ? len : 1020;  // порівнюємо всі 1020 символів
-        if (wcsncmp(lastEntry.text, text, checkLen) == 0) return; 
+        if (wcsncmp(lastEntry.text, text, checkLen) == 0) {
+            LeaveCriticalSection(&g_DataLock); // звільняємо дані перед виходом
+            return;
+        } 
     }
 
-    // зсуваємо голову буфера (автообертання 255 -> 0 працює апаратно)
-    unpinnedHead++; 
+    unpinnedHead++;     // зсуваємо голову буфера (автообертання 255 -> 0 працює апаратно)
     ClipEntry& entry = unpinnedBuffer[unpinnedHead];
 
     // якщо в комірці був старий запис (File) — чистимо його у сховищі
@@ -725,8 +751,9 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
         CreateDirectoryW(DB_FOLDER_NAME, NULL);
     }
 
-    // синхронізуємо стан з диском
-    SaveBlockToDisk(unpinnedHead, false, text);
+    LeaveCriticalSection(&g_DataLock);  // звільняємо дані перед роботою з диском
+
+    SaveBlockToDisk(unpinnedHead, false, text);    // синхронізуємо стан з диском
 }
 
 // функція відновлює індексну карту прев'ю після перезапуску за мілісекунди
@@ -775,20 +802,30 @@ void LoadHistory() {
 
 // логіка ледачого завантаження (Lazy Loading), читаємо повний запис у виділену пам'ять (викликається перед Ctrl+V)
 wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
+    EnterCriticalSection(&g_DataLock); // блокуємо дані на час читання метаданих
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index];
-    if (!(entry.dataflags & DataFlags::Used)) return NULL;
+    if (!(entry.dataflags & DataFlags::Used)) {
+        LeaveCriticalSection(&g_DataLock);
+        return NULL;
+    }
 
     // динамічно просимо пам'ять у системи суворо під розмір тексту (+1 для нуль-термінатора рядка)
     wchar_t* targetBuffer = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, (entry.textLength + 1) * sizeof(wchar_t));
-    if (!targetBuffer) return NULL;
+    if (!targetBuffer) {
+        LeaveCriticalSection(&g_DataLock);
+        return NULL;
+    }
 
-    if (entry.textflags & TextFlags::Small) {
+    ClipEntry localEntry = entry;  // робимо локальну копію структури та виділяємо необхідні дані
+    LeaveCriticalSection(&g_DataLock); // відразу відпускаємо, далі працюємо з локальною копією
+
+    if (localEntry.textflags & TextFlags::Small) {
         // варіант А: Текст повністю лежить в RAM
-        memcpy(targetBuffer, entry.text, entry.textLength * sizeof(wchar_t));
+        memcpy(targetBuffer, localEntry.text, localEntry.textLength * sizeof(wchar_t));
     } 
-    else if (entry.textflags & TextFlags::Normal) {
+    else if (localEntry.textflags & TextFlags::Normal) {
         // варіант Б: Забираємо inline-частину (перші 1020 символів) з RAM
-        memcpy(targetBuffer, entry.text, 1020 * sizeof(wchar_t));
+        memcpy(targetBuffer, localEntry.text, 1020 * sizeof(wchar_t));
         
         // дочитуємо решту тексту ("хвіст") зі сховища за O(1)
         HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -797,7 +834,7 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
             offset.QuadPart += RAM_BLOCK_SIZE; // стрибаємо повз 2 КБ картки прев'ю на початок хвоста
             SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
             
-            DWORD bytesToRead = (entry.textLength - 1020) * sizeof(wchar_t);
+            DWORD bytesToRead = (localEntry.textLength - 1020) * sizeof(wchar_t);
             DWORD bytesRead;
             ReadFile(hFile, targetBuffer + 1020, bytesToRead, &bytesRead, NULL);
             DWORD slotSalt = (isPinned ? 1000 : 0) + index;
@@ -805,25 +842,25 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
             CloseHandle(hFile);
         }
     } 
-    else if (entry.textflags & TextFlags::File) {
+    else if (localEntry.textflags & TextFlags::File) {
         // варіант В: текст великий, читаємо його з окремого зовнішнього файлу
         wchar_t filepath[MAX_PATH];
-        StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", entry.fileData.fileName);
+        StringCchPrintfW(filepath, MAX_PATH, DB_FOLDER_PATH L"%s", localEntry.fileData.fileName);
         HANDLE hFile = CreateFileW(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD fileSalt = 0;
             DWORD bytesRead = 0;
             ReadFile(hFile, &fileSalt, sizeof(fileSalt), &bytesRead, NULL);   // читаємо унікальну сіль файлу (перші 4 байти)
-            DWORD bytesToRead = entry.textLength * sizeof(wchar_t);
+            DWORD bytesToRead = localEntry.textLength * sizeof(wchar_t);
             ReadFile(hFile, targetBuffer, bytesToRead, &bytesRead, NULL);
             SecureProcessBuffer((BYTE*)targetBuffer, bytesRead, fileSalt, false);  // розшифровуємо все тіло файлу
             CloseHandle(hFile);
         } else {
-            StringCchCopyW(targetBuffer, entry.textLength + 1, L"[ПОМИЛКА] Зовнішній файл не знайдено.");
+            StringCchCopyW(targetBuffer, localEntry.textLength + 1, L"[ПОМИЛКА] Зовнішній файл не знайдено.");
         }
     }
 
-    targetBuffer[entry.textLength] = L'\0'; // ставимо фінальний маркер кінця рядка
+    targetBuffer[localEntry.textLength] = L'\0'; // ставимо фінальний маркер кінця рядка
     return targetBuffer;
 }
 
@@ -895,6 +932,8 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
         if (hData) {
             wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pText) {
+                EnterCriticalSection(&g_DataLock); // блокуванням даних захищаємо роботу з глобальною пам'яттю
+
                 if (copyDirectToPinned) {
                     pinnedHead++; // тимчасово зсуваємо pinnedHead вперед і робимо запис через проміжну змінну
                     ClipEntry& entry = pinnedBuffer[pinnedHead];
@@ -917,19 +956,24 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                         GenerateLargeFileName(entry.fileData.fileName, pText);
                         CreateDirectoryW(DB_FOLDER_NAME, NULL);
                     }
-                    SaveBlockToDisk(pinnedHead, true, pText);
+                    LeaveCriticalSection(&g_DataLock);   // звільняємо блокування перед тривалим записом на диск
+                    SaveBlockToDisk(pinnedHead, true, pText);  // записуємо на диск
+                    EnterCriticalSection(&g_DataLock); // знову блокуємо для збереження технічних індексів
                     
                     if (setAsAltC) {
                         lastAltCIndex = pinnedHead;  // запам'ятовуємо індекс закріпленої картки кільцевого буфера
                         lastAltCIsPinned = true;
                     }
                 } else {
+                    LeaveCriticalSection(&g_DataLock); // звільняємо, бо AddToHistory сама заблокує дані всередині
                     AddToHistory(pText, setAsAltC ? DataFlags::CtrlC : 0);  // зберігаємо текст в історію (він стане на позицію unpinnedHead)
+                    EnterCriticalSection(&g_DataLock); // блокуємо знову для безпечного запису індексу Alt+V
                     if (setAsAltC) {
                         lastAltCIndex = unpinnedHead;  // запам'ятовуємо індекс картки кільцевого буфера для Alt+V
                         lastAltCIsPinned = false;
                     }
                 }
+                LeaveCriticalSection(&g_DataLock); // фінально відпускаємо захист даних
                 GlobalUnlock(hData);
             }
         }
@@ -1654,13 +1698,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // логіка м'ютексу (заборона множинних копій і реалізація Alt+Q як перемикача)
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Local\\LayoutClipboardMutex");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // якщо утиліта вже працює — знаходимо її вікно і відправляємо команду на закриття
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {    // якщо утиліта вже працює — знаходимо її вікно і кажемо закрити
         HWND hExistingWnd = FindWindowW(L"CustomClipboardMenu", NULL);
         if (hExistingWnd) PostMessage(hExistingWnd, WM_CLOSE, 0, 0);
         CloseHandle(hMutex);
         return 0; // завершуємо цей екземпляр
     }
+
+    InitializeCriticalSection(&g_DataLock);
 
     InitMaps(); 
     
@@ -1711,9 +1756,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     if (g_hKeyboardHook) UnhookWindowsHookEx(g_hKeyboardHook);
-    CleanupGraphics(); // прибираємо за собою GDI ресурси
-    
-    CloseHandle(hMutex);    // звільнення мутексу при виході
-    
+    CleanupGraphics();  // прибираємо за собою GDI ресурси
+    DeleteCriticalSection(&g_DataLock); // видаляємо критичну секцію
+    CloseHandle(hMutex);     // звільнення мутексу при виході
     return 0;
 }
