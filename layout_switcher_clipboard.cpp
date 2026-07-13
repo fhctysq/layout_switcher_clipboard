@@ -730,6 +730,23 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
         RemoveByRealIndex(unpinnedHead, false);
     }
 
+    if (extraTextFlags & TextFlags::Dynamic) {   // безпечна обробка TextFlags::Dynamic
+        if (len > 1020) { 
+            entry.dataflags = DataFlags::Empty;  // маркуємо комірку порожньою, бо текст завеликий
+            LeaveCriticalSection(&g_DataLock);   // розблоковуємо дані перед виходом, щоб уникнути дедлоку
+            return; 
+        }
+        entry.textLength = len;
+        entry.dataflags = DataFlags::Used | extraDataFlags;
+        entry.textflags = TextFlags::Dynamic; 
+        wmemcpy(entry.text, text, len);
+
+        LeaveCriticalSection(&g_DataLock);   // розблоковуємо дані перед дисковим I/O
+
+        SaveBlockToDisk(unpinnedHead, false, text);    // записуємо лише оновлені лічильники heads на диск, без тексту
+        return;
+    }
+
     // заповнюємо 8 байтів нових метаданих
     entry.textLength = len;
     entry.dataflags = DataFlags::Used | extraDataFlags;
@@ -819,8 +836,10 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
     ClipEntry localEntry = entry;  // робимо локальну копію структури та виділяємо необхідні дані
     LeaveCriticalSection(&g_DataLock); // відразу відпускаємо, далі працюємо з локальною копією
 
-    if (localEntry.textflags & TextFlags::Small) {
-        // варіант А: Текст повністю лежить в RAM
+    if (localEntry.textflags & TextFlags::Dynamic) {     // обробка гілки TextFlags::Dynamic
+        memcpy(targetBuffer, localEntry.text, localEntry.textLength * sizeof(wchar_t));   // в inline-буфері RAM
+    }
+    else if (localEntry.textflags & TextFlags::Small) {      // текст повністю лежить в RAM
         memcpy(targetBuffer, localEntry.text, localEntry.textLength * sizeof(wchar_t));
     } 
     else if (localEntry.textflags & TextFlags::Normal) {
