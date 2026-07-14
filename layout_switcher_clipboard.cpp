@@ -307,48 +307,75 @@ void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest); //
 
 // оновлює список текстів у вікні UI, відображаючи тільки активні записи з урахуванням Pinned і Unpinned масивів
 void UpdateListBox() {
-    AcquireSRWLockExclusive(&g_DataLock); // блокуємо дані
+    AcquireSRWLockShared(&g_DataLock); // блокуємо дані залишаючи доступ для читання
     SendMessage(hListBox, LB_RESETCONTENT, 0, 0); 
     wchar_t display[1024];  // максимальна довжина тексту для відображення
     wchar_t uiText[1024];
-    firstPinnedListIdx = -1; // скидаємо перед перерахунком
+    g_VisualCount = 0;       // скидаємо лічильник видимих елементів перед перерахунком
+    firstPinnedListIdx = -1; // скидаємо маркер початку закріплених записів перед перерахунком
 
-    // спершу виводимо звичайні (Unpinned) записи від найновішого до найстарішого
-    for (int i = 0; i < 256; i++) { // ітеруємо по буферу
-        uint8_t realIdx = (unpinnedHead - i) & 255;
-        ClipEntry& entry = unpinnedBuffer[realIdx];
+    // // спершу виводимо звичайні (Unpinned) записи від найновішого до найстарішого
+    // for (int i = 0; i < 256; i++) { // ітеруємо по буферу
+    //     uint8_t realIdx = (unpinnedHead - i) & 255;
+    //     ClipEntry& entry = unpinnedBuffer[realIdx];
 
-        if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
-        FormatPreviewForUI(entry.text, entry.textLength, display);
-        if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку
-            StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
-        } else {
-            StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
-        }
-        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
-        SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
-    }
-    for (int i = 255; i >= 0; i--) { // ітеруємо по буферу закріплені (Pinned) записи
-        uint8_t realIdx = (pinnedHead - i) & 255;
-        ClipEntry& entry = pinnedBuffer[realIdx];
+    //     if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня/затомбстонена (кошик) — пропускаємо її
+    //     FormatPreviewForUI(entry.text, entry.textLength, display);
+    //     if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку
+    //         StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);  // візуальний маркер для RAM-only текстів
+    //     } else {
+    //         StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
+    //     }
+    //     LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
+    //     SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (0 << 8) | realIdx); // маска координати: 0 = Unpinned
+    // }
+    // for (int i = 255; i >= 0; i--) { // ітеруємо по буферу закріплені (Pinned) записи
+    //     uint8_t realIdx = (pinnedHead - i) & 255;
+    //     ClipEntry& entry = pinnedBuffer[realIdx];
         
-        if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
-        FormatPreviewForUI(entry.text, entry.textLength, display);
+    //     if (!(entry.dataflags & DataFlags::Used)) continue; // якщо комірка порожня або затомбстонена (кошик) — пропускаємо її
+    //     FormatPreviewForUI(entry.text, entry.textLength, display);
 
-        if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку і для запінених записів
-            StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
-        } else {
-            StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
-        }
+    //     if (entry.textflags & TextFlags::Dynamic) {  // перевірка на блискавку і для запінених записів
+    //         StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
+    //     } else {
+    //         StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
+    //     }
 
-        LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
-        SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (1 << 8) | realIdx); // маска координати: 1 = Pinned
+    //     LRESULT listItemIdx = SendMessageW(hListBox, LB_ADDSTRING, 0, (LPARAM)uiText);
+    //     SendMessage(hListBox, LB_SETITEMDATA, listItemIdx, (1 << 8) | realIdx); // маска координати: 1 = Pinned
 
-        if (firstPinnedListIdx == -1) {  // запам'ятовуємо, де в переліку почався блок запінених
-            firstPinnedListIdx = static_cast<int>(listItemIdx);
+    //     if (firstPinnedListIdx == -1) {  // запам'ятовуємо, де в переліку почався блок запінених
+    //         firstPinnedListIdx = static_cast<int>(listItemIdx);
+    //     }
+    // }
+
+    // мапуємо звичайні (Unpinned) записи від найновішого (unpinnedHead) до найстарішого
+    for (int i = 0; i < 256; i++) {
+        uint8_t realIdx = (unpinnedHead - i) & 255;    // вираховуємо реальний фізичний індекс у масиві
+        
+        if (unpinnedBuffer[realIdx].dataflags & DataFlags::Used) {    // комірка містить активні дані
+            g_VisualMap[g_VisualCount++] = { realIdx, 0 };      // записуємо відповідність unpinnedBuffer[realIdx]
         }
     }
-    ReleaseSRWLockExclusive(&g_DataLock); // знімаємо блокування даних
+
+    // мапуємо закріплені (Pinned) запис у зворотному порядку (від старіших до новіших)
+    for (int i = 255; i >= 0; i--) {
+        uint8_t realIdx = (pinnedHead - i) & 255;     // вираховуємо реальний індекс у pinnedBuffer
+        
+        if (pinnedBuffer[realIdx].dataflags & DataFlags::Used) {     // запінена картка активна
+            // запам'ятовуємо позицію першого запіненого елемента для стрибка Shift
+            if (firstPinnedListIdx == -1) {
+                firstPinnedListIdx = g_VisualCount;
+            }
+            g_VisualMap[g_VisualCount++] = { realIdx, 1 };    // записуємо відповідність pinnedBuffer[realIdx]
+        }
+    }
+    
+    ReleaseSRWLockShared(&g_DataLock); // знімаємо блокування даних
+
+    SendMessage(hListBox, LB_SETCOUNT, g_VisualCount, 0);  // повідомляємо системі скільки всього рядків тепер в переліку
+    InvalidateRect(hListBox, NULL, TRUE);    // кажемо Windows перемалювати список
 }
 
 // =|=|= управління історіює та видаленими записами =|=|=
@@ -598,21 +625,9 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 if ((isWin && ((GetAsyncKeyState(VK_LMENU) & 0x8000) || (GetAsyncKeyState(VK_RMENU) & 0x8000))) ||
                     (isAlt && ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)))) 
                 {
-                    int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                    if (sel >= 0) {
-                        LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, sel, 0);
-                        if (itemData != LB_ERR) {
-                            bool isPinned = (itemData >> 8) & 1;
-                            uint8_t realIdx = itemData & 0xFF;
-                            
-                            TogglePinState(realIdx, isPinned);
-                            
-                            UpdateListBox(); // оновлюємо UI та зберігаємо виділення на тій самій позиції
-                            int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
-                            if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);  // коригуємо індекс виділення, якщо елемент був останнім
-                        }
-                    }
-                    CancelWindowsMenuFocus();
+                    CancelWindowsMenuFocus();  // скидаємо фокус системного меню Windows (фікс для Alt)
+                    // кидаємо асинхронне завдання процесу вікна і повертаємо керування ОС
+                    PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::TogglePinCurrent), 0);
                     return 1; // блокуємо подію: Win/Alt не дійдуть до ОС
                 }
             }
@@ -1033,22 +1048,18 @@ cleanup:  // гарантована деініціалізація та відн
 }
 // вставка конкретного тексту з історії (вибір через віконце)
 void PasteFromHistory(int index) {
-    if (index < 0) return;
+    if (index < 0 || index >= g_VisualCount) return;  // перевіряємо, чи індекс у межах наявних у UI карток
 
-    // розпаковуємо індекс і прапорець з меню
-    LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, index, 0);
-    if (itemData == LB_ERR) return;
-
-    bool isPinned = (itemData >> 8) & 1;
-    uint8_t realIdx = itemData & 0xFF;
+    bool isPinned = g_VisualMap[index].isPinned; // дізнаємось, чи закріплена ця картка
+    uint8_t realIdx = g_VisualMap[index].realIdx; // отримуємо її справжній індекс у кільцевому буфері
     
     if (!((GetAsyncKeyState(VK_LMENU) & 0x8000) || (GetAsyncKeyState(VK_RMENU) & 0x8000))) {
         ShowWindow(hMainWindow, SW_HIDE);   // ховаємо віконце лише якщо користувач не утримує клавішу Alt
     }
-    ignoreClipboardUpdate = true; 
-    BackupSysClipboard();
+    ignoreClipboardUpdate = true; // запобігаємо самокопіюванню
+    BackupSysClipboard();         // зберігаємо поточний буфер користувача
 
-    wchar_t* textToPaste = LoadTextByRealIndex(realIdx, isPinned);
+    wchar_t* textToPaste = LoadTextByRealIndex(realIdx, isPinned); // ледаче завантаження: дістаємо повний текст (з RAM, спільного або окремого файлу)
     if (textToPaste && OpenClipboard(NULL)) {
         if (!EmptyClipboard()) {
             CloseClipboard();
@@ -1060,24 +1071,24 @@ void PasteFromHistory(int index) {
             wchar_t* pDest = static_cast<wchar_t*>(GlobalLock(hData));
             StringCchCopyW(pDest, cch, textToPaste);
             GlobalUnlock(hData);
-            SetClipboardData(CF_UNICODETEXT, hData);
+            SetClipboardData(CF_UNICODETEXT, hData); // передаємо текст у системний буфер обміну
         }
         CloseClipboard();
         
-        SendKeyCombo(VK_CONTROL, 0x56); 
-        Sleep(100);
+        SendKeyCombo(VK_CONTROL, 0x56); // імітуємо Ctrl+V для вставки тексту в активне вікно
+        Sleep(100); // даємо системі час завершити вставку
     }
-    RestoreSysClipboard(); 
+    RestoreSysClipboard();  // відновлюємо системний буфер
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
 
-    // піднімаємо використаний текст нагору списку (якщо він не Pinned)
-    if (textToPaste && !isPinned && realIdx != unpinnedHead) {
+    // піднімаємо використаний текст нагору списку (якщо він не Pinned і далі перших 4-х елементів)
+    if (textToPaste && !isPinned && realIdx != unpinnedHead && index >= 4) {
         RemoveByRealIndex(realIdx, false);
         AddToHistory(textToPaste);
     }
 
-    if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste); 
+    if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste);  // звільняємо пам'ять
 }
 
 // зміна розкладки, регістру або закреслення тексту прямо на льоту
@@ -1297,20 +1308,19 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             int btnBottom = cardBottom - 8;
             int btnTop = btnBottom - 38;
             
-            // якщо клік саме по кнопці (32x32 пікселі у кутку)
+            // якщо клік саме по кнопці "📌" (36x36 пікселів у кутку)
             if (clickX >= btnLeft && clickX <= btnRight && clickY >= btnTop && clickY <= btnBottom) {
-                LRESULT itemData = SendMessage(hwnd, LB_GETITEMDATA, selIdx, 0);
-                if (itemData != LB_ERR) {
-                    bool isPinned = (itemData >> 8) & 1;
-                    uint8_t realIdx = itemData & 0xFF;
+                if (selIdx >= 0 && selIdx < g_VisualCount) {    // перевіряємо валідність виділеного елемента у віртуальній мапі
+                    bool isPinned = g_VisualMap[selIdx].isPinned;    // читаємо метадані елемента з RAM-мапи
+                    uint8_t realIdx = g_VisualMap[selIdx].realIdx;
                     
-                    TogglePinState(realIdx, isPinned);
-                    UpdateListBox();
+                    TogglePinState(realIdx, isPinned);   // змінюємо статус на протилежний
+                    UpdateListBox();    // перераховуємо віртуальну мапу g_VisualMap та оновлюємо перелік
                     
-                    int count = SendMessage(hwnd, LB_GETCOUNT, 0, 0);
+                    int count = SendMessage(hwnd, LB_GETCOUNT, 0, 0);    // коригуємо виділення: якщо елемент зсунувся, тримаємо фокус на тій же позиції
                     if (count > 0) SendMessage(hwnd, LB_SETCURSEL, selIdx >= count ? count - 1 : selIdx, 0);
                 }
-                return 0; // перехопили клік, не виконуємо стандартну вставку тексту
+                return 0; // перехоплюємо клік, не виконуємо стандартну вставку тексту
             }
             
             // клікнули по картці — виконуємо звичайну вставку тексту
@@ -1362,6 +1372,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+// =|=|= мапування для віртуального переліку =|=|=
+struct VisualItem {
+    uint8_t realIdx;
+    uint8_t isPinned;
+};
+VisualItem g_VisualMap[512]; // зв'язок: індекс на екрані -> індекс у RAM
+int g_VisualCount = 0;       // скільки всього карток зараз бачить користувач
+
 // =|=|= обробник головного вікна =|=|=
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -1370,7 +1388,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             ApplyWindowShape(hwnd); // викликаємо лише тут (або якщо налаштування змінилися)
 
             hListBox = CreateWindowEx(0, L"LISTBOX", NULL, 
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_WANTKEYBOARDINPUT | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT,
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_WANTKEYBOARDINPUT | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT | LBS_NODATA,
                 0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, hwnd, (HMENU)1, NULL, NULL);
             
             SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);    // перелік повідомлень з кастомним виглядом
@@ -1487,36 +1505,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         
         case WM_DRAWITEM: { // gdi renderer одного запису (округлені картки)
             DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
-            if (dis->itemID == -1) break;  // 
+            if (dis->itemID == -1 || dis->itemID >= (UINT)g_VisualCount) break;  // ігноруємо порожні запити або запити на індекси поза межами
 
-            HDC hdc = dis->hDC;
-            RECT rc = dis->rcItem;
-            bool isSelected = (dis->itemState & ODS_SELECTED); 
+            HDC hdc = dis->hDC;      // контекст малювання Windows (полотно)
+            RECT rc = dis->rcItem;   // межі виділеного рядка на екрані
+            bool isSelected = (dis->itemState & ODS_SELECTED); // відстежуємо виділений елемент
 
-            RECT cardRect = rc;
+            RECT cardRect = rc;     // додаємо відступи всередині елемента
             cardRect.left += g_Config.itemGap; cardRect.right -= g_Config.itemGap;
             cardRect.top += g_Config.itemGap / 2; cardRect.bottom -= g_Config.itemGap / 2;
 
-            // обираємо пензлі з пам'яті (без створення і видалення)
+            // обираємо пензлі з пам'яті, залежно від того чи виділено елемент
             HGDIOBJ oldBrush = SelectObject(hdc, isSelected ? g_brCardSelected : g_brCardNormal);
             HGDIOBJ oldPen = SelectObject(hdc, isSelected ? g_penCardSelected : g_penCardNormal);
             // малювання RoundRect для фону картки
             RoundRect(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, g_Config.cornerRadius, g_Config.cornerRadius);
 
-            // розпаковуємо дані, щоб знати стан запису
-            LRESULT itemData = SendMessage(dis->hwndItem, LB_GETITEMDATA, dis->itemID, 0);
-            bool isPinned = (itemData != LB_ERR) ? ((itemData >> 8) & 1) : false;
+            VisualItem item = g_VisualMap[dis->itemID];   // дізнаємося, який саме елемент пам'яті відповідає рядку на екрані
+            bool isPinned = item.isPinned;
 
-            SetBkMode(hdc, TRANSPARENT);
+            wchar_t display[1024];    // локальні буфери для тексту, щоб не тримати блокування пам'яті під час малювання
+            wchar_t uiText[1024];
 
-            wchar_t text[1024]; // малюємо текст
-            SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
-            SetTextColor(hdc, RGB(240, 240, 240));
+            AcquireSRWLockShared(&g_DataLock);    // shared-лок тільки для копіювання тексту
+            // отримуємо посилання на оригінальний запис в RAM
+            ClipEntry& entry = isPinned ? pinnedBuffer[item.realIdx] : unpinnedBuffer[item.realIdx];
+            // очищуємо текст від службових переносоів рядків і обрізаємо під розмір UI.
+            FormatPreviewForUI(entry.text, entry.textLength, display);
+            if (entry.textflags & TextFlags::Dynamic) {    // якщо це сенситивні дані (Dynamic), маркуємо блискавкою
+                StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
+            } else {
+                StringCchCopyW(uiText, ARRAYSIZE(uiText), display);
+            }
+            ReleaseSRWLockShared(&g_DataLock);    // відразу відпускаємо блокування
+
+            SetBkMode(hdc, TRANSPARENT); // відмальовуємо текст без тла
+            SetTextColor(hdc, RGB(240, 240, 240)); // майже білий колір тексту
 
             RECT textRect = cardRect;
-            textRect.left += 14; textRect.right -= 14; // відступ на початку і в кінці на 14
+            textRect.left += 14; textRect.right -= 14;  // відступ на початку і в кінці на 14
             textRect.top += 10; textRect.bottom -= 10;  // відступ згори 10
-            DrawTextW(hdc, text, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DrawTextW(hdc, uiText, -1, &textRect, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);  // виводимо відформатований для картки текст
 
             RECT btnRect;  // малюємо кнопку піна (понад тексту, у правому нижньому кутку)
             btnRect.right = cardRect.right - 8;          // правий відступ від краю картки
@@ -1524,13 +1553,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             btnRect.bottom = cardRect.bottom - 8;        // відступ від низу картки
             btnRect.top = btnRect.bottom - 38;            // висота кнопки: 38px
             
-            // малюємо фон самої кнопки (яскравий, якщо закріплено)
-            SelectObject(hdc, g_brBtnNormal);
-            SelectObject(hdc, g_penBtnNormal);
+            SelectObject(hdc, g_brBtnNormal);  // поле для кнопки
+            SelectObject(hdc, g_penBtnNormal); // фон самої кнопки (яскравий, якщо закріплено)
             RoundRect(hdc, btnRect.left, btnRect.top, btnRect.right, btnRect.bottom, 16, 16);  // заокруглення кнопки 16
             
-            // відновлюємо старі об'єкти (щоб не зламати стан контексту)
-            SelectObject(hdc, oldBrush); 
+            SelectObject(hdc, oldBrush);    // відновлюємо старі об'єкти контексту, щоб не витікала пам'ять GDI
             SelectObject(hdc, oldPen);
             
             // якщо запис запінений — шпилька яскрава, якщо ні — тьмяна (підказка для кліку)
@@ -1598,6 +1625,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ignoreClipboardUpdate = false;
                 }
             }
+            else if (cmd == HotkeyCmd::TogglePinCurrent) {   // перемикання закріплення
+                int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0); // запит індексу виділеного рядка
+                if (sel >= 0 && sel < g_VisualCount) {
+                    bool isPinned = g_VisualMap[sel].isPinned;  // у власному потоці читаємо RAM-мапу та оновлюємо дані
+                    uint8_t realIdx = g_VisualMap[sel].realIdx;
+                    
+                    TogglePinState(realIdx, isPinned); // змінюємо статус закріплення
+                    UpdateListBox();                   // оновлюємо інтерфейс
+                    
+                    int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);  // коригуємо виділення картки у списку
+                    if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0); 
+                }
+            }
             else if (cmd == HotkeyCmd::MenuDown) {     
                 if (IsWindowVisible(hMainWindow)) {
                     int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
@@ -1655,22 +1695,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return -2; // кажемо системі, що ми самі обробили натискання
             }
 
-            if (LOWORD(wParam) == VK_DELETE) {  // Delete - видалити запис
-                int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                if (sel >= 0) {
-                    LRESULT itemData = SendMessage(hListBox, LB_GETITEMDATA, sel, 0);
-                    if (itemData != LB_ERR) {
-                        bool isPinned = (itemData >> 8) & 1;
-                        uint8_t realIdx = itemData & 0xFF;
+            if (LOWORD(wParam) == VK_DELETE) {  // Delete - видалити запис  // перехоплюємо натискання клавіші
+                int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0); // отримуємо виділену картку
+                if (sel >= 0 && sel < g_VisualCount) {    // перевіряємо валідність виділення
+                    bool isPinned = g_VisualMap[sel].isPinned;    // читаємо координати видалення з RAM-мапи
+                    uint8_t realIdx = g_VisualMap[sel].realIdx;
                         
-                        RemoveByRealIndex(realIdx, isPinned); 
-                        UpdateListBox();
+                    RemoveByRealIndex(realIdx, isPinned);  // переносимо запис у кошик (встановлюємо маркер Tombstone на диску та в RAM)
+                    UpdateListBox();        // і оновлюємо структуру відображення
                         
-                        int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
-                        if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0); 
-                    }
+                    int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);   // зберігаємо виділення на сусідньому елементі після видалення
+                    if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);   // коригуємо індекс виділення, якщо елемент був останнім
                 }
-                return -2;
+                return -2; // повертаємо -2: повідомляємо Windows, що ми самі обробили клавішу
             }
             
             if (LOWORD(wParam) == VK_DOWN || LOWORD(wParam) == VK_UP) {
