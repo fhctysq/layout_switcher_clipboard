@@ -303,6 +303,14 @@ LARGE_INTEGER CalculateOffset(uint8_t index, bool isPinned) {
     return offset;
 }
 
+// =|=|= мапування для віртуального переліку =|=|=
+struct VisualItem {
+    uint8_t realIdx;
+    uint8_t isPinned;
+};
+VisualItem g_VisualMap[512]; // зв'язок: індекс на екрані -> індекс у RAM
+int g_VisualCount = 0;       // скільки всього карток зараз бачить користувач
+
 void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest); // випереджаюче оголошення для UpdateListBox
 
 // оновлює список текстів у вікні UI, відображаючи тільки активні записи з урахуванням Pinned і Unpinned масивів
@@ -1371,14 +1379,6 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-
-// =|=|= мапування для віртуального переліку =|=|=
-struct VisualItem {
-    uint8_t realIdx;
-    uint8_t isPinned;
-};
-VisualItem g_VisualMap[512]; // зв'язок: індекс на екрані -> індекс у RAM
-int g_VisualCount = 0;       // скільки всього карток зараз бачить користувач
 
 // =|=|= обробник головного вікна =|=|=
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
