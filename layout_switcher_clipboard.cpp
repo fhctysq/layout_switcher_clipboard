@@ -413,20 +413,16 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     }
 }
 
-// функція видаляє картки - переміщує запис в кошик (Tombstoning) - за справжнім індексом буфера
-void RemoveByRealIndex(uint8_t index, bool isPinned) {
-    AcquireSRWLockExclusive(&g_DataLock); // блокуємо дані
+// внутрішня функція без блокування. викликається тільки коли g_DataLock вже захоплено
+void RemoveByRealIndex_Internal(uint8_t index, bool isPinned) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index];
     if (!(entry.dataflags & DataFlags::Used)) {  // якщо запис уже порожній або затомбстонений — нічого не робимо
         ReleaseSRWLockExclusive(&g_DataLock);  // відпускаємо лок перед виходом
         return; 
     }
 
-    // якщо це великий текст — перейменовуємо його файл під кошик
-    if (entry.textflags & TextFlags::File) {
-        wchar_t oldPath[MAX_PATH];
-        wchar_t newPath[MAX_PATH];
-        wchar_t newFileName[32];
+    if (entry.textflags & TextFlags::File) {    // якщо це великий текст — перейменовуємо його файл
+        wchar_t oldPath[MAX_PATH], newPath[MAX_PATH], newFileName[32];
         StringCchPrintfW(newFileName, 32, L"del_%s", entry.fileData.fileName); // нове ім'я файлу з префіксом del_
         
         // збираємо повні шляхи до старого та нового файлів
@@ -445,6 +441,12 @@ void RemoveByRealIndex(uint8_t index, bool isPinned) {
     if (lastAltCIndex == index && lastAltCIsPinned == isPinned) {
         lastAltCIndex = -1;
     }
+}
+
+// функція видаляє картки - переміщує запис в кошик (Tombstoning) - за справжнім індексом буфера
+void RemoveByRealIndex(uint8_t index, bool isPinned) {
+    AcquireSRWLockExclusive(&g_DataLock); // блокуємо дані
+    RemoveByRealIndex_Internal(index, isPinned);
     ReleaseSRWLockExclusive(&g_DataLock); // знімаємо блокування даних
 
     SaveBlockToDisk(index, isPinned, NULL); // зберігаємо оновлену затомбстонену картку на диск
@@ -587,7 +589,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
 
         if (isKeyDown) {
-            // перевіряємо комбінацію Alt+Win або Win+Alt при відкритому меню
+            // перевіряємо комбінацію Alt+Win або Win+Alt при відкритому вікні
             if (IsWindowVisible(hMainWindow)) {
                 bool isWin = (pKeyBoard->vkCode == VK_LWIN || pKeyBoard->vkCode == VK_RWIN);
                 bool isAlt = (pKeyBoard->vkCode == VK_LMENU || pKeyBoard->vkCode == VK_RMENU);
@@ -716,9 +718,8 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     unpinnedHead++;     // зсуваємо голову буфера (автообертання 255 -> 0 працює апаратно)
     ClipEntry& entry = unpinnedBuffer[unpinnedHead];
 
-    // якщо в комірці був старий запис (File) — чистимо його у сховищі
-    if (entry.dataflags & DataFlags::Used) {
-        RemoveByRealIndex(unpinnedHead, false);
+    if (entry.dataflags & DataFlags::Used) {   // якщо в комірці був старий запис (File) — чистимо його у сховищі
+        RemoveByRealIndex_Internal(unpinnedHead, false);
     }
 
     if (extraTextFlags & TextFlags::Dynamic) {   // безпечна обробка TextFlags::Dynamic
@@ -948,7 +949,7 @@ void CustomCopyOrCut(WORD vkCode, bool setAsAltC = true, bool copyDirectToPinned
                     pinnedHead++; // тимчасово зсуваємо pinnedHead вперед і робимо запис через проміжну змінну
                     ClipEntry& entry = pinnedBuffer[pinnedHead];
                     if (entry.dataflags & DataFlags::Used) {
-                        RemoveByRealIndex(pinnedHead, true);
+                        RemoveByRealIndex_Internal(pinnedHead, true);
                     }
                     uint32_t len = lstrlenW(pText);
                     entry.textLength = len;
@@ -1263,8 +1264,8 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         return 0; // перехоплюємо повідомлення, щоб перелік не скролився сам по собі
     }
-    if (msg == WM_SYSKEYDOWN && (wParam == VK_MENU || wParam == VK_LMENU || wParam == VK_RMENU)) {
-        if (firstPinnedListIdx != -1) {    // якщо натиснуто Alt (у будь-якій формі), стрибаємо на Pinned
+    if (msg == WM_KEYDOWN && wParam == VK_SHIFT) {
+        if (firstPinnedListIdx != -1) {    // якщо натиснуто Shift (у будь-якій формі), стрибаємо на Pinned
             SendMessage(hwnd, LB_SETCURSEL, firstPinnedListIdx, 0);
             SendMessage(hwnd, LB_SETTOPINDEX, firstPinnedListIdx, 0);
         }
