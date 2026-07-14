@@ -20,15 +20,6 @@
 #endif
 
 // =|=|= глобальні налаштування інтерфейсу =|=|=
-// #define UI_WIN_WIDTH 560        // ширина головного вікна буфера
-// #define UI_WIN_HEIGHT 704       // висота головного вікна
-// #define UI_ITEM_HEIGHT 90       // висота однієї "картки" з текстом
-// #define UI_ITEM_GAP 8           // відступ між картками
-// #define UI_CORNER_RADIUS 20     // радіус заокруглення кутів вікна та карток
-#define UI_PREVIEW_LENGTH 168   // скільки символів початку тексту показувати у прев'ю TODO
-// #define UI_HEADER_HEIGHT 32     // висота верхньої "шапки" (за яку можна тягати вікно)
-// #define UI_BOTTOM_HEIGHT 32     // висота нижньої смужки для перетягування
-
 struct AppSettings {
     int winWidth = 560;        // ширина головного вікна буфера
     int winHeight = 704;       // висота головного вікна
@@ -318,8 +309,8 @@ void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest); //
 void UpdateListBox() {
     AcquireSRWLockExclusive(&g_DataLock); // блокуємо дані
     SendMessage(hListBox, LB_RESETCONTENT, 0, 0); 
-    wchar_t display[UI_PREVIEW_LENGTH + 5];
-    wchar_t uiText[UI_PREVIEW_LENGTH + 20];
+    wchar_t display[1024];  // максимальна довжина тексту для відображення
+    wchar_t uiText[1024];
     firstPinnedListIdx = -1; // скидаємо перед перерахунком
 
     // спершу виводимо звичайні (Unpinned) записи від найновішого до найстарішого
@@ -1206,13 +1197,13 @@ cleanup:
 // допоміжна функція: готує текст для відображення в меню, очищуючи його від переносів рядків (\n -> _)
 void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest) {
     int j = 0;
-    for (int k = 0; k < sourceLen && j < UI_PREVIEW_LENGTH; k++) {
-        if (source[k] == L'\r') continue; // ігноруємо переміщення курсора на початок поточного рядка 
+    for (int k = 0; k < sourceLen && j < g_Config.uiPreviewLength; k++) {  // обмеження циклу
+        if (source[k] == L'\r') continue;   // ігноруємо переміщення курсора на початок поточного рядка 
         if (source[k] == L'\n') { dest[j++] = L' '; continue; }  // замінюємо переноси на пробіли
         dest[j++] = source[k];
     }
-    if (sourceLen > UI_PREVIEW_LENGTH && j <= UI_PREVIEW_LENGTH) {
-        StringCchCopyW(dest + j, (UI_PREVIEW_LENGTH + 5) - j, L"..."); // якщо текст більший ліміту — додаємо три крапки
+    if (sourceLen > g_Config.uiPreviewLength && j <= g_Config.uiPreviewLength) {   // перевірка довжини
+        StringCchCopyW(dest + j, 1024 - j, L"...\x2003\x2003\x2003\x2003");  // якщо текст більший ліміту — додаємо три крапки і місце для кнопок.
     } else {
         dest[j] = L'\0';
     }
@@ -1517,7 +1508,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             SetBkMode(hdc, TRANSPARENT);
 
-            wchar_t text[UI_PREVIEW_LENGTH + 20]; // малюємо текст
+            wchar_t text[1024]; // малюємо текст
             SendMessage(dis->hwndItem, LB_GETTEXT, dis->itemID, (LPARAM)text);
             SetTextColor(hdc, RGB(240, 240, 240));
 
