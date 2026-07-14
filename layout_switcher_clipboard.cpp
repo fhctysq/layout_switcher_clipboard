@@ -22,7 +22,7 @@
 // =|=|= глобальні налаштування інтерфейсу =|=|=
 struct AppSettings {
     int winWidth = 560;        // ширина головного вікна буфера
-    int winHeight = 704;       // висота головного вікна
+    int winHeight = 720;       // висота головного вікна
     int itemHeight = 90;       // висота однієї "картки" з текстом
     int itemGap = 8;           // відступ між картками
     int cornerRadius = 20;     // радіус заокруглення кутів вікна та карток
@@ -131,7 +131,7 @@ enum class HotkeyCmd {
     Layout = 1, Copy = 2, Paste = 3, MenuDown = 4, Cut = 6, 
     Undo = 7, MenuUp = 8, Case = 9, SilentCopyAll = 10, 
     StrikeSlanted = 11, StrikeStraight = 12,  // команди для косметики тексту
-    PinCopy = 13, PinCut = 14, PinPaste = 15  // команди для роботи із закріпленими в буфері
+    PinCopy = 13, PinCut = 14, PinPaste = 15, TogglePinCurrent = 16  // команди для роботи із закріпленими в буфері
 };
 
 // =|=|= словники для зміни розкладки =|=|=
