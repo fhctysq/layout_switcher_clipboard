@@ -1221,6 +1221,14 @@ void FormatPreviewForUI(const wchar_t* source, int sourceLen, wchar_t* dest) {
         if (source[k] == L'\r') continue;   // ігноруємо переміщення курсора на початок поточного рядка 
         if (source[k] == L'\n') { dest[j++] = L' '; continue; }  // замінюємо переноси на пробіли
         dest[j++] = source[k];
+        // ін'єкція невидимого пробілу (ZWS) для коректного перенесення довгих URL, шляхів та назв
+        if (source[k] == L'/' || source[k] == L'=' || source[k] == L'&' || 
+            source[k] == L'?' || source[k] == L'-' || source[k] == L'_') 
+        {
+            if (j < g_Config.uiPreviewLength) {
+                dest[j++] = L'\x200B';
+            }
+        }
     }
     if (sourceLen > g_Config.uiPreviewLength && j <= g_Config.uiPreviewLength) {   // перевірка довжини
         StringCchCopyW(dest + j, 1024 - j, L"...\x2003\x2003\x2003\x2003");  // якщо текст більший ліміту — додаємо три крапки і місце для кнопок.
