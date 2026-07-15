@@ -1284,7 +1284,7 @@ LRESULT CALLBACK ListBoxSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         return 0; // перехоплюємо повідомлення, щоб перелік не скролився сам по собі
     }
     if (msg == WM_KEYDOWN && wParam == VK_SHIFT) {
-        if (firstPinnedListIdx != -1) {    // якщо натиснуто Shift (у будь-якій формі), стрибаємо на Pinned
+        if ((lParam & 0x40000000) == 0 && firstPinnedListIdx != -1) {   // якщо натиснуто Shift ((lParam & 0x40000000) == 0 означає, що це перше натискання), стрибаємо на Pinned
             SendMessage(hwnd, LB_SETCURSEL, firstPinnedListIdx, 0);
             SendMessage(hwnd, LB_SETTOPINDEX, firstPinnedListIdx, 0);
         }
@@ -1686,15 +1686,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 PasteFromHistory(SendMessage(hListBox, LB_GETCURSEL, 0, 0)); return -2; 
             }
             if (LOWORD(wParam) == VK_ESCAPE) { ShowWindow(hwnd, SW_HIDE); return -2; }  // Esc - закрити меню
-            if (LOWORD(wParam) == 'P' || LOWORD(wParam) == 'p') {  // стрибок до запінених клавішею 'P'
-                if (firstPinnedListIdx != -1) {
-                    SendMessage(hListBox, LB_SETCURSEL, firstPinnedListIdx, 0);
-                    // прокручуємо на перший запінений елемент
-                    SendMessage(hListBox, LB_SETTOPINDEX, firstPinnedListIdx, 0); 
-                }
-                return -2; // кажемо системі, що ми самі обробили натискання
-            }
-
+            
             if (LOWORD(wParam) == VK_DELETE) {  // Delete - видалити запис  // перехоплюємо натискання клавіші
                 int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0); // отримуємо виділену картку
                 if (sel >= 0 && sel < g_VisualCount) {    // перевіряємо валідність виділення
@@ -1702,25 +1694,79 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     uint8_t realIdx = g_VisualMap[sel].realIdx;
                         
                     RemoveByRealIndex(realIdx, isPinned);  // переносимо запис у кошик (встановлюємо маркер Tombstone на диску та в RAM)
-                    UpdateListBox();        // і оновлюємо структуру відображення
+                    UpdateListBox();       // і оновлюємо відображення
                         
                     int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);   // зберігаємо виділення на сусідньому елементі після видалення
                     if (count > 0) SendMessage(hListBox, LB_SETCURSEL, sel >= count ? count - 1 : sel, 0);   // коригуємо індекс виділення, якщо елемент був останнім
                 }
-                return -2; // повертаємо -2: повідомляємо Windows, що ми самі обробили клавішу
+                return -2;  // повертаємо -2: повідомляємо Windows, що ми самі обробили клавішу
             }
             
-            if (LOWORD(wParam) == VK_DOWN || LOWORD(wParam) == VK_UP) {
+            if (LOWORD(wParam) == VK_DOWN || LOWORD(wParam) == VK_UP) {  // циклічний скролінг стрілочками
                 int curSel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
                 int count = SendMessage(hListBox, LB_GETCOUNT, 0, 0);
                 if (count > 0) {
                     if (LOWORD(wParam) == VK_DOWN) curSel = (curSel + 1) % count;
                     else if (LOWORD(wParam) == VK_UP) curSel = (curSel - 1 + count) % count;
-                    SendMessage(hListBox, LB_SETCURSEL, curSel, 0);
-                    return -2; 
+                    SendMessage(hListBox, LB_SETCURSEL, curSel, 0);  // коригуємо індекс виділення
+                    return -2;  // повідомляємо Windows, що ми самі обробили клавішу
                 }
             }
-            return -1; 
+
+            {    // ручний пошук по першому символу для навігації
+                WORD vk = LOWORD(wParam); 
+                // відтинаємо службові клавіші, реагуємо лише на літери, цифри та розділові знаки 
+                if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z') || vk == VK_OEM_3 || (vk >= 0xBA && vk <= 0xC0) || (vk >= 0xDB && vk <= 0xDE)) { 
+                    BYTE keyState[256]; 
+                    GetKeyboardState(keyState); // читаємо фізичний стан клавіатури 
+                    wchar_t chars[10] = {0}; 
+                    UINT scanCode = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC); // отримуємо скан-код клавіші 
+                    
+                    int res = ToUnicode(vk, scanCode, keyState, chars, 10, 0);    // перекладаємо віртуальну клавішу в реальний Юнікод-символ  
+                    if (res > 0) { 
+                        wchar_t typedChar = towupper(chars[0]); // переводимо введений символ у верхній регістр 
+                        int curSel = SendMessage(hListBox, LB_GETCURSEL, 0, 0); 
+                        int count = g_VisualCount; 
+                        
+                        if (count > 0) {     // шукаємо з наступного елемента після виділеного
+                            int startIdx = (curSel + 1) % count;  
+                            int foundIdx = -1; 
+                            
+                            AcquireSRWLockShared(&g_DataLock); // блокуємо буфер для безпечного читання 
+                            for (int i = 0; i < count; i++) { 
+                                int idx = (startIdx + i) % count; 
+                                bool isPinned = g_VisualMap[idx].isPinned; 
+                                uint8_t realIdx = g_VisualMap[idx].realIdx; 
+                                ClipEntry& entry = isPinned ? pinnedBuffer[realIdx] : unpinnedBuffer[realIdx]; 
+                                
+                                // визначаємо, звідки прочитати текст 
+                                const wchar_t* textPtr = (entry.textflags & TextFlags::File) ? entry.fileData.preview : entry.text; 
+                                
+                                // пропускаємо будь-які пробіли та переноси, перевіряємо кінець рядка (L'\0')
+                                int charOffset = 0; 
+                                while (textPtr[charOffset] != L'\0' && (textPtr[charOffset] == L' ' || textPtr[charOffset] == L'\t' || textPtr[charOffset] == L'\r' || textPtr[charOffset] == L'\n')) { 
+                                    charOffset++; 
+                                }
+                                
+                                wchar_t firstChar = textPtr[charOffset]; 
+                                // порівнюємо першу літеру картки (також у верхньому регістрі) із тим, що ввів користувач 
+                                if (firstChar != L'\0' && towupper(firstChar) == typedChar) { 
+                                    foundIdx = idx; 
+                                    break; // знайшли найближчий елемент — зупиняємо цикл 
+                                }
+                            }
+                            ReleaseSRWLockShared(&g_DataLock); // знімаємо блокування даних 
+                            
+                            if (foundIdx != -1) { 
+                                SendMessage(hListBox, LB_SETCURSEL, foundIdx, 0); // виділяємо знайдений елемент 
+                                SendMessage(hListBox, LB_SETTOPINDEX, foundIdx, 0); // скролимо список 
+                            }
+                            return -2; // повідомляємо Windows, що ми обробили цю подію введення 
+                        }
+                    }
+                }
+            }
+            return -1; // для всіх інших клавіш використовуємо стандартну поведінку Windows 
 
         case WM_ACTIVATE: // якщо юзер клікає поза вікном — ховаємо його
             if (LOWORD(wParam) == WA_INACTIVE) ShowWindow(hwnd, SW_HIDE); 
