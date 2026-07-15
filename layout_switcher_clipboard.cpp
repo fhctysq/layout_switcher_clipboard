@@ -688,7 +688,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
 // =|=|= робота з файлами (для великих текстів) =|=|=
 
-// функція генерує компактне ім'я для відокремлених файлів - понад 16 КБ - (формат: РРММДД_ГГХХСС_текст.bin)
+// функція генерує компактне ім'я для відокремлених файлів - понад 16 КБ - (формат: РРММДД_ГГХХСС_текст)
 void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
     SYSTEMTIME st;
     GetLocalTime(&st); // отримуємо поточний локальний час системи
@@ -697,26 +697,26 @@ void GenerateLargeFileName(wchar_t* outName, const wchar_t* sourceText) {
     wchar_t timeStr[16];
     StringCchPrintfW(timeStr, 16, L"%02d%02d%02d_%02d%02d%02d", st.wYear % 100, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     
-    // витягаємо безпечні символи тексту (до 14 символів)
+    // витягаємо безпечні символи тексту (до 17 символів)
     wchar_t cleanText[18] = {0}; // 17 символів + нуль
     int j = 0;
     for (int i = 0; sourceText[i] != L'\0' && j < 17; i++) { // біжимо по тексту, поки не наберемо 17 чистих чарів
         wchar_t c = sourceText[i];
-        if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { // замінюємо всі переноси та пробіли на підкреслення
+        if (c == L'\r' || c == L'\n' || c == L'\t' || c == L' ') { // замінюємо всі переноси, табуляції та пробіли на підкреслення
             if (j > 0 && cleanText[j-1] != L'_') cleanText[j++] = L'_';
             continue;
         }
-        if (wcschr(L"\\/:*?\"<>|", c) == NULL) { // якщо символ не заборонений файловою системою Windows
+        if (wcschr(L"\\/:*?\"<>|.", c) == NULL) { // якщо символ не заборонений файловою системою Windows і не крапка (.), щоб уникнути імітації розширень
             cleanText[j++] = c; // копіюємо його в ім'я файлу
         }
     }
-    if (j > 0 && cleanText[j-1] == L'_') cleanText[j-1] = L'\0'; // прибираємо підкреслення на кінці, якщо воно там залишилось
+    if (j > 0 && cleanText[j-1] == L'_') cleanText[j-1] = L'\0'; // прибираємо підкреслення наприкінці, якщо воно там залишилось
 
     // збираємо фінальне ім'я у буфер картки (максимум 31 символ + нуль-термінатор)
     if (j > 0) {
-        StringCchPrintfW(outName, 32, L"%s_%s.bin", timeStr, cleanText); // якщо текст наявний: 260524_235959_MyText.bin
+        StringCchPrintfW(outName, 32, L"%s_%s", timeStr, cleanText); // якщо текст наявний: 260524_235959_MyText
     } else {
-        StringCchPrintfW(outName, 32, L"%s_file.bin", timeStr); // якщо тексту немає взагалі: 260524_235959_file.bin
+        StringCchPrintfW(outName, 32, L"%s_file", timeStr); // якщо тексту немає взагалі: 260524_235959_file
     }
 }
 
