@@ -48,22 +48,23 @@ AppSettings g_Config; // глобальний об'єкт конфігураці
 
 // === синхронізація доступу до даних ===
 SRWLOCK g_DataLock = SRWLOCK_INIT;
+HANDLE g_hDbFile = INVALID_HANDLE_VALUE; // глобальний дескриптор для відкритого файлу БД
 
 namespace DataFlags { // прапори даних про картку
-    const uint8_t Empty     = 0;         // 0000 0000 (Комірка вільна / Tombstone)
-    const uint8_t Used      = 1 << 0;    // 0000 0001 (Запис активний)
-    const uint8_t CtrlC     = 1 << 1;    // 0000 0010 (Системний буфер)
-    const uint8_t Micro     = 1 << 2;    // 0000 0100 (Мікротекст)
-    const uint8_t Pinned    = 1 << 3;    // 0000 1000 (Закріплений)
-    const uint8_t Encrypted = 1 << 4;    // 0001 0000 (Зашифрований)
+    const uint8_t Empty     = 0;         // 0000 0000 (комірка вільна / Tombstone)
+    const uint8_t Used      = 1 << 0;    // 0000 0001 (запис активний)
+    const uint8_t CtrlC     = 1 << 1;    // 0000 0010 (системний буфер)
+    const uint8_t Micro     = 1 << 2;    // 0000 0100 (мікротекст)
+    const uint8_t Pinned    = 1 << 3;    // 0000 1000 (закріплений)
+    const uint8_t Encrypted = 1 << 4;    // 0001 0000 (зашифрований)
 }
 
 namespace TextFlags { // прапори для обробки тексту
     const uint8_t None      = 0;
-    const uint8_t Small     = 1 << 0;    // < 2 КБ (Текст повністю в RAM)
-    const uint8_t Normal    = 1 << 1;    // 2 КБ - 16 КБ (Хвіст на диску)
-    const uint8_t File      = 1 << 2;    // > 16 КБ (Хвіст в окремому файлі)
-    const uint8_t Dynamic   = 1 << 3;    // Сенситивні дані (лише RAM, не пишемо на диск)
+    const uint8_t Small     = 1 << 0;    // < 2 КБ (текст повністю в RAM)
+    const uint8_t Normal    = 1 << 1;    // 2 КБ - 16 КБ (хвіст на диску)
+    const uint8_t File      = 1 << 2;    // > 16 КБ (хвіст в окремому файлі)
+    const uint8_t Dynamic   = 1 << 3;    // сенситивні дані (лише RAM, не пишемо на диск)
 }
 
 #pragma pack(push, 8)
@@ -294,12 +295,11 @@ void SendKeyCombo(WORD modifier, WORD key) {
 }
 
 // =|=|= допоміжні функції для роботи з диском =|=|=
-// обчислює фізичний зсув (offset) блоку у файлі (2 байти суперблок + індекс * 16 КБ)
+// обчислює фізичний зсув (offset) блоку у файлі (індекс * 16 КБ)
 LARGE_INTEGER CalculateOffset(uint8_t index, bool isPinned) {
     LARGE_INTEGER offset;
-    // додаємо базове зміщення 16 КБ (один порожній блок) під заголовок програми
-    uint32_t baseOffset = DISK_BLOCK_SIZE + (isPinned ? (256 * DISK_BLOCK_SIZE) : 0);
-    offset.QuadPart = baseOffset + (static_cast<uint32_t>(index) * DISK_BLOCK_SIZE);
+    // звичайні записи з 0, закріплені — після них (через 256 блоків)
+    offset.QuadPart = (isPinned ? (256 * DISK_BLOCK_SIZE) : 0) + (static_cast<uint32_t>(index) * DISK_BLOCK_SIZE);
     return offset;
 }
 
@@ -393,23 +393,28 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
     
     HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);  // відкриваємо основний файл
-    if (hFile != INVALID_HANDLE_VALUE) {
-        uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники на початку файлу (офсет 0)
-        DWORD written;
-        WriteFile(hFile, heads, 2, &written, NULL); // записуємо 2 байти лічильників на зміщення 0
+    if (g_hDbFile != INVALID_HANDLE_VALUE) {
 
+        if (GetLastError() != ERROR_ALREADY_EXISTS) {   // перевірка і виділення місця якщо файлу не існує
+            LARGE_INTEGER fileSize;
+            fileSize.QuadPart = (512 * DISK_BLOCK_SIZE) + 2;     // 512 блоків по 16 КБ + 2 байти для heads в кінці
+            SetFilePointerEx(g_hDbFile, fileSize, NULL, FILE_BEGIN);
+            SetEndOfFile(g_hDbFile); // ОС резервує нефрагментоване місце на диску
+        }
         if (entry.textflags & TextFlags::Dynamic) {
-            CloseHandle(hFile);
+            CloseHandle(g_hDbFile);
             return; // якщо це Dynamic (сенситивний запис), не пишемо його на диск і нічого не робимо
         }
 
+        DWORD written;
+
         LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
-        SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+        SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
        
         ClipEntry diskEntry = entry;  // створюємо копію даних для шифрування
         DWORD slotSalt = (isPinned ? 1000 : 0) + index;
         SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом
-        WriteFile(hFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
+        WriteFile(g_hDbFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
 
         // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
         if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
@@ -418,11 +423,17 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
             if (encTail) {
                 memcpy(encTail, fullText + 1020, tailBytes);
                 SecureProcessBuffer(encTail, tailBytes, slotSalt, true); // шифрування хвоста на диску
-                WriteFile(hFile, encTail, tailBytes, &written, NULL); // дописуємо у файл за блоком метаданих
+                WriteFile(g_hDbFile, encTail, tailBytes, &written, NULL); // дописуємо у файл за блоком метаданих
                 HeapFree(GetProcessHeap(), 0, encTail);
             }
         }
-        CloseHandle(hFile);  // закриваємо файл
+        LARGE_INTEGER headsOffset;  // запис heads в кінець файлу
+        headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE; // стрибаємо в кінець
+        SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
+        
+        uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники в кінці файлу
+        WriteFile(g_hDbFile, heads, 2, &written, NULL); // записуємо 2 байти лічильників на зміщення
+        CloseHandle(g_hDbFile);  // закриваємо файл
     }
 
     // якщо це великий текст, виносимо файл в окрему папку
@@ -788,27 +799,41 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
     SaveBlockToDisk(unpinnedHead, false, text);    // синхронізуємо стан з диском
 }
 
-// функція відновлює індексну карту прев'ю після перезапуску за мілісекунди
+// функція відновлює індексну карту прев'ю після перезапуску
 void LoadHistory() {
-    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile != INVALID_HANDLE_VALUE) {
+    g_hDbFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (g_hDbFile != INVALID_HANDLE_VALUE) {
+
+        if (GetLastError() != ERROR_ALREADY_EXISTS) {   // попереднє виділення місця (Pre-allocation), якщо файл щойно створено
+            LARGE_INTEGER fileSize;
+            headsOffset.QuadPart = (512 * DISK_BLOCK_SIZE) + 2;   // 512 блоків по 16 КБ + 2 байти для лічильників (heads) у самому кінці
+            SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
+
+            uint8_t initHeads[2] = { 255, 255 };
+            DWORD written;   // відразу записуємо чисті лічильники в кінець файлу
+            WriteFile(g_hDbFile, initHeads, 2, &written, NULL);
+        }
+        
         DWORD read;
         uint8_t heads[2] = { 255, 255 };
+
+        LARGE_INTEGER headsOffset;   // читання лічильників з кінця файлу
+        headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE; // стрибаємо повз усі 512 блоків
+        SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
         
         // читаємо і відновлюємо глобальні лічильники кільцевого буфера
-        if (ReadFile(hFile, heads, 2, &read, NULL) && read == 2) {
+        if (ReadFile(g_hDbFile, heads, 2, &read, NULL) && read == 2) {
             unpinnedHead = heads[0];
             pinnedHead = heads[1];
         }
 
-        // завантажуємо тільки індексні картки (по 2 КБ) для звичайних записів
-        for (int i = 0; i < 256; i++) {
+        for (int i = 0; i < 256; i++) {     // завантажуємо тільки індексні картки (по 2 КБ) для звичайних записів
             LARGE_INTEGER offset = CalculateOffset(i, false);
-            SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+            SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
             ClipEntry tempEntry; // тимчасова структура
-            ReadFile(hFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
+            ReadFile(g_hDbFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
             if (read == RAM_BLOCK_SIZE) {
-                DWORD slotSalt = i;   // !isPinned
+                DWORD slotSalt = i;   // сіль — це індекс запису
                 SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
                 if (tempEntry.dataflags & DataFlags::Used) {       // тепер безпечно перевіряємо прапорець
                     unpinnedBuffer[i] = tempEntry; // записуємо валідну картку в RAM
@@ -817,18 +842,17 @@ void LoadHistory() {
         }
         for (int i = 0; i < 256; i++) {  // також тільки індексні картки (по 2 КБ) для закріплених записів
             LARGE_INTEGER offset = CalculateOffset(i, true);
-            SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+            SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
             ClipEntry tempEntry; 
-            ReadFile(hFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
+            ReadFile(g_hDbFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
             if (read == RAM_BLOCK_SIZE) {
-                DWORD slotSalt = 1000 + i;  // isPinned
+                DWORD slotSalt = 1000 + i;  // сіль для isPinned
                 SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
                 if (tempEntry.dataflags & DataFlags::Used) {
                     pinnedBuffer[i] = tempEntry; // записуємо валідну картку
                 }
             }
-        }
-        CloseHandle(hFile);
+        }    // не закриваємо файл, g_hDbFile продовжує працювати
     }
 }
 
