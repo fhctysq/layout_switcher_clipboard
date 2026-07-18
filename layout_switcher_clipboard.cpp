@@ -393,32 +393,30 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
 
     if (g_hDbFile != INVALID_HANDLE_VALUE) {   // використовуємо глобальний дескриптор. якщо файл чомусь закритий — виходимо
-
-        if (entry.textflags & TextFlags::Dynamic) {   // Problem: старий запис йде на друге коло
-            goto update_heads_only;  // якщо це сенситивні дані, на диск не пишемо, лише оновлюємо лічильники, щоб не зламати номери комірок
-        }
-
         DWORD written;
-        LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
-        SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
-       
-        ClipEntry diskEntry = entry;  // створюємо копію даних для шифрування
-        DWORD slotSalt = (isPinned ? 1000 : 0) + index;
-        SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом
-        WriteFile(g_hDbFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
+        if (!(entry.textflags & TextFlags::Dynamic)) {   // якщо це сенситивні дані, на диск не пишемо, лише оновлюємо лічильники, щоб не зламати номери комірок // Problem: старий запис йде на друге коло
 
-        // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
-        if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
-            DWORD tailBytes = (entry.textLength - 1020) * sizeof(wchar_t);
-            BYTE* encTail = (BYTE*)HeapAlloc(GetProcessHeap(), 0, tailBytes); // тимчасово виділяємо пам'ять під хвіст
-            if (encTail) {
-                memcpy(encTail, fullText + 1020, tailBytes);
-                SecureProcessBuffer(encTail, tailBytes, slotSalt, true); // шифрування хвоста на диску
-                WriteFile(g_hDbFile, encTail, tailBytes, &written, NULL); // дописуємо у файл за блоком метаданих
-                HeapFree(GetProcessHeap(), 0, encTail);
+            LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
+            SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
+       
+            ClipEntry diskEntry = entry;  // створюємо копію даних для шифрування
+            DWORD slotSalt = (isPinned ? 1000 : 0) + index;
+            SecureProcessBuffer((BYTE*)&diskEntry, RAM_BLOCK_SIZE, slotSalt, true);  // шифруємо копію структури метаданих перед записом
+            WriteFile(g_hDbFile, &diskEntry, RAM_BLOCK_SIZE, &written, NULL);    // записуємо 2 КБ (метадані + прев'ю)
+
+            // якщо це Normal, дописуємо хвіст суворо в межах цього ж 16 КБ слота
+            if (fullText && (entry.textflags & TextFlags::Normal) && entry.textLength > 1020) {
+                DWORD tailBytes = (entry.textLength - 1020) * sizeof(wchar_t);
+                BYTE* encTail = (BYTE*)HeapAlloc(GetProcessHeap(), 0, tailBytes); // тимчасово виділяємо пам'ять під хвіст
+                if (encTail) {
+                    memcpy(encTail, fullText + 1020, tailBytes);
+                    SecureProcessBuffer(encTail, tailBytes, slotSalt, true); // шифрування хвоста на диску
+                    WriteFile(g_hDbFile, encTail, tailBytes, &written, NULL); // дописуємо у файл за блоком метаданих
+                    HeapFree(GetProcessHeap(), 0, encTail);
+                }
             }
         }
-    update_heads_only:
+
         LARGE_INTEGER headsOffset;  // запис heads в кінець файлу
         headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE; // стрибаємо в кінець
         SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
@@ -1073,7 +1071,7 @@ void PasteFromHistory(int index) {
     if (textToPaste && OpenClipboard(NULL)) {
         if (!EmptyClipboard()) {
             CloseClipboard();
-            return; // перериваємо логіку, щоб не виконати SendKeyCombo з Ctrl+V
+            goto cleanup; // стрибаємо до блоку очищення, щоб не виконати SendKeyCombo з Ctrl+V
         }
         size_t cch = lstrlenW(textToPaste) + 1;
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
@@ -1088,6 +1086,7 @@ void PasteFromHistory(int index) {
         SendKeyCombo(VK_CONTROL, 0x56); // імітуємо Ctrl+V для вставки тексту в активне вікно
         Sleep(100); // даємо системі час завершити вставку
     }
+cleanup: // гарантоване відновлення стану програми та звільнення пам'яті
     RestoreSysClipboard();  // відновлюємо системний буфер
     ClearPendingClipboardUpdates();
     ignoreClipboardUpdate = false;
@@ -1097,7 +1096,6 @@ void PasteFromHistory(int index) {
         RemoveByRealIndex(realIdx, false);
         AddToHistory(textToPaste);
     }
-
     if (textToPaste) HeapFree(GetProcessHeap(), 0, textToPaste);  // звільняємо пам'ять
 }
 
@@ -1538,10 +1536,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             wchar_t uiText[1024];
 
             AcquireSRWLockShared(&g_DataLock);    // shared-лок тільки для копіювання тексту
-            // отримуємо посилання на оригінальний запис в RAM
-            ClipEntry& entry = isPinned ? pinnedBuffer[item.realIdx] : unpinnedBuffer[item.realIdx];
+            ClipEntry& entry = isPinned ? pinnedBuffer[item.realIdx] : unpinnedBuffer[item.realIdx];   // отримуємо посилання на оригінальний запис в RAM
+            
             // очищуємо текст від службових переносоів рядків і обрізаємо під розмір UI.
-            FormatPreviewForUI(entry.text, entry.textLength, display);
+            const wchar_t* src = (entry.textflags & TextFlags::File) ? entry.fileData.preview : entry.text;
+            int srcLen = (entry.textLength > 988) ? 988 : entry.textLength; // обмежуємо буфером прев'ю
+            FormatPreviewForUI(src, srcLen, display);    // відформатований текст
+            
             if (entry.textflags & TextFlags::Dynamic) {    // якщо це сенситивні дані (Dynamic), маркуємо блискавкою
                 StringCchPrintfW(uiText, ARRAYSIZE(uiText), L"⚡ %s", display);
             } else {
@@ -1750,19 +1751,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 ClipEntry& entry = isPinned ? pinnedBuffer[realIdx] : unpinnedBuffer[realIdx]; 
                                 
                                 // визначаємо, звідки прочитати текст 
-                                const wchar_t* textPtr = (entry.textflags & TextFlags::File) ? entry.fileData.preview : entry.text; 
+                                const wchar_t* textPtr = (entry.textflags & TextFlags::File) ? entry.fileData.preview : entry.text;
+                                int maxSafeLen = (entry.textLength > 988) ? 988 : entry.textLength;    // ліміт безпечного читання масиву в RAM
                                 
-                                // пропускаємо будь-які пробіли та переноси, перевіряємо кінець рядка (L'\0')
-                                int charOffset = 0; 
-                                while (textPtr[charOffset] != L'\0' && (textPtr[charOffset] == L' ' || textPtr[charOffset] == L'\t' || textPtr[charOffset] == L'\r' || textPtr[charOffset] == L'\n')) { 
-                                    charOffset++; 
-                                }
-                                
-                                wchar_t firstChar = textPtr[charOffset]; 
-                                // порівнюємо першу літеру картки (також у верхньому регістрі) із тим, що ввів користувач 
-                                if (firstChar != L'\0' && towupper(firstChar) == typedChar) { 
-                                    foundIdx = idx; 
-                                    break; // знайшли найближчий елемент — зупиняємо цикл 
+                                if (maxSafeLen > 0) {    // перевірка абсолютного першого символу (дозволяє шукати по пробілу/табу)
+                                    if (towupper(textPtr[0]) == typedChar) {
+                                        foundIdx = idx;  // знайшли збіг, зберігаємо індекс
+                                        break;  // зупиняємо цикл 
+                                    }
+
+                                    int skipLimit = (maxSafeLen > 32) ? 32 : maxSafeLen;    // пропуск відступів для коду (максимум 32 символи / 8 табів)
+                                    int charOffset = 0; // ініціюємо нулем відлік
+                                    
+                                    while (charOffset < skipLimit &&  // перевіряємо символи шукаючи не-пробільний аж до 33-го
+                                          (textPtr[charOffset] == L' ' || textPtr[charOffset] == L'\t' || 
+                                           textPtr[charOffset] == L'\r' || textPtr[charOffset] == L'\n')) 
+                                    {
+                                        charOffset++;  // зсуваємо позицію далі
+                                    }
+                                    
+                                    if (charOffset < maxSafeLen && textPtr[charOffset] != L'\0') {    // перевірка першої значущої літери після відступу
+                                        if (towupper(textPtr[charOffset]) == typedChar) {     // порівнюємо першу літеру (також у верхньому регістрі) із тим, що ввів користувач 
+                                            foundIdx = idx;  // знайшли збіг, зберігаємо індекс
+                                            break;  // зупиняємо цикл 
+                                        }
+                                    }
                                 }
                             }
                             ReleaseSRWLockShared(&g_DataLock); // знімаємо блокування даних 
