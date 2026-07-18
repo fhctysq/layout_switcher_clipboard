@@ -418,6 +418,7 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
                 HeapFree(GetProcessHeap(), 0, encTail);
             }
         }
+    update_heads_only:
         LARGE_INTEGER headsOffset;  // запис heads в кінець файлу
         headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE; // стрибаємо в кінець
         SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
@@ -784,11 +785,14 @@ void LoadHistory() {
 
         if (GetLastError() != ERROR_ALREADY_EXISTS) {   // попереднє виділення місця (Pre-allocation), якщо файл щойно створено
             LARGE_INTEGER fileSize;
-            headsOffset.QuadPart = (512 * DISK_BLOCK_SIZE) + 2;   // 512 блоків по 16 КБ + 2 байти для лічильників (heads) у самому кінці
-            SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
+            fileSize.QuadPart = (512 * DISK_BLOCK_SIZE) + 2;   // 512 блоків по 16 КБ + 2 байти для лічильників (heads) у самому кінці
+            SetFilePointerEx(g_hDbFile, fileSize, NULL, FILE_BEGIN);
 
-            uint8_t initHeads[2] = { 255, 255 };
-            DWORD written;   // відразу записуємо чисті лічильники в кінець файлу
+            LARGE_INTEGER headsOffset;
+            headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE;
+            SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
+            uint8_t initHeads[2] = { 255, 255 };    // відразу записуємо чисті лічильники в кінець файлу
+            DWORD written;
             WriteFile(g_hDbFile, initHeads, 2, &written, NULL);
         }
         
