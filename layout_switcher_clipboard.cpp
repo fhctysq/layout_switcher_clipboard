@@ -391,23 +391,14 @@ void UpdateListBox() {
 // функція записує у сховище блок (метадані + текст) і за потреби хвіст або зовнішній файл
 void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index]; // отримуємо посилання на комірку відразу при вході
-    
-    HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);  // відкриваємо основний файл
-    if (g_hDbFile != INVALID_HANDLE_VALUE) {
 
-        if (GetLastError() != ERROR_ALREADY_EXISTS) {   // перевірка і виділення місця якщо файлу не існує
-            LARGE_INTEGER fileSize;
-            fileSize.QuadPart = (512 * DISK_BLOCK_SIZE) + 2;     // 512 блоків по 16 КБ + 2 байти для heads в кінці
-            SetFilePointerEx(g_hDbFile, fileSize, NULL, FILE_BEGIN);
-            SetEndOfFile(g_hDbFile); // ОС резервує нефрагментоване місце на диску
-        }
-        if (entry.textflags & TextFlags::Dynamic) {
-            CloseHandle(g_hDbFile);
-            return; // якщо це Dynamic (сенситивний запис), не пишемо його на диск і нічого не робимо
+    if (g_hDbFile != INVALID_HANDLE_VALUE) {   // використовуємо глобальний дескриптор. якщо файл чомусь закритий — виходимо
+
+        if (entry.textflags & TextFlags::Dynamic) {   // Problem: старий запис йде на друге коло
+            goto update_heads_only;  // якщо це сенситивні дані, на диск не пишемо, лише оновлюємо лічильники, щоб не зламати номери комірок
         }
 
         DWORD written;
-
         LARGE_INTEGER offset = CalculateOffset(index, isPinned); // стрибаємо до потрібного блоку
         SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
        
@@ -433,7 +424,6 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
         
         uint8_t heads[2] = { unpinnedHead, pinnedHead };  // зберігаємо лічильники в кінці файлу
         WriteFile(g_hDbFile, heads, 2, &written, NULL); // записуємо 2 байти лічильників на зміщення
-        CloseHandle(g_hDbFile);  // закриваємо файл
     }
 
     // якщо це великий текст, виносимо файл в окрему папку
@@ -534,18 +524,14 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
     if ((sourceEntry.textflags & TextFlags::Normal) && sourceEntry.textLength > 1020) {
         tailBytes = (sourceEntry.textLength - 1020) * sizeof(wchar_t);
         normalTail = (wchar_t*)HeapAlloc(GetProcessHeap(), 0, tailBytes);
-        if (normalTail) {
+        if (normalTail && g_hDbFile != INVALID_HANDLE_VALUE) {
             LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
             sourceOffset.QuadPart += RAM_BLOCK_SIZE; // зсув на хвіст
             
-            HANDLE hFileR = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFileR != INVALID_HANDLE_VALUE) {
-                SetFilePointerEx(hFileR, sourceOffset, NULL, FILE_BEGIN);
-                DWORD br; ReadFile(hFileR, normalTail, tailBytes, &br, NULL); // читаємо хвіст прямо в XOR-і
-                DWORD sourceSalt = (currentlyPinned ? 1000 : 0) + realIdx;
-                SecureProcessBuffer((BYTE*)normalTail, br, sourceSalt, false); // розшифровуємо зі старого слоту
-                CloseHandle(hFileR);
-            }
+            SetFilePointerEx(g_hDbFile, sourceOffset, NULL, FILE_BEGIN);
+            DWORD br; ReadFile(g_hDbFile, normalTail, tailBytes, &br, NULL); // читаємо хвіст прямо в XOR-і
+            DWORD sourceSalt = (currentlyPinned ? 1000 : 0) + realIdx;
+            SecureProcessBuffer((BYTE*)normalTail, br, sourceSalt, false); // розшифровуємо зі старого слоту
         }
     }
 
@@ -559,41 +545,33 @@ void TogglePinState(uint8_t realIdx, bool currentlyPinned) {
 
     ReleaseSRWLockExclusive(&g_DataLock); // знімаємо блокування, тексти в RAM вже консистентні
 
-    // безпечно синхронізуємо з диском (один вхід до файлу для чотирьох задач)
-    HANDLE hFileW = CreateFileW(DB_FILE_NAME, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFileW != INVALID_HANDLE_VALUE) {
+    if (g_hDbFile != INVALID_HANDLE_VALUE) {   // безпечно синхронізуємо з диском (один вхід до файлу для чотирьох задач)
         DWORD written;
-        
-        // 1: оновлюємо глобальні лічильники в суперблоці (офсет 0)
-        uint8_t heads[2] = { unpinnedHead, pinnedHead };
-        WriteFile(hFileW, heads, 2, &written, NULL);
-
-        // 2: записуємо нову комірку (метадані + прев'ю)
-        LARGE_INTEGER targetOffset = CalculateOffset(targetIdx, !currentlyPinned);
-        SetFilePointerEx(hFileW, targetOffset, NULL, FILE_BEGIN);
+        // записуємо нову комірку (метадані + прев'ю)
+        LARGE_INTEGER headsOffset;
+        headsOffset.QuadPart = 512 * DISK_BLOCK_SIZE;
+        SetFilePointerEx(g_hDbFile, headsOffset, NULL, FILE_BEGIN);
+        uint8_t heads[2] = { unpinnedHead, pinnedHead };    // оновлюємо глобальні лічильники в суперблоці (офсет 0)
+        WriteFile(g_hDbFile, heads, 2, &written, NULL);
         // записуємо зашифровані метадані в новий слот цільового барабану
-        ClipEntry diskTargetEntry = targetEntry;
+        LARGE_INTEGER targetOffset = CalculateOffset(targetIdx, !currentlyPinned);
+        SetFilePointerEx(g_hDbFile, targetOffset, NULL, FILE_BEGIN);
         DWORD targetSalt = (!currentlyPinned ? 1000 : 0) + targetIdx;
         SecureProcessBuffer((BYTE*)&diskTargetEntry, RAM_BLOCK_SIZE, targetSalt, true);
-        WriteFile(hFileW, &diskTargetEntry, RAM_BLOCK_SIZE, &written, NULL);
+        WriteFile(g_hDbFile, &diskTargetEntry, RAM_BLOCK_SIZE, &written, NULL);
 
-        // 3: якщо був хвіст Normal-тексту, записуємо його у новий офсет
-        if (normalTail) {
+        if (normalTail) {   // якщо був хвіст Normal-тексту, записуємо його у новий офсет
             SecureProcessBuffer((BYTE*)normalTail, tailBytes, targetSalt, true);  // виклик шифрування хвоста
-            WriteFile(hFileW, normalTail, tailBytes, &written, NULL);   // запис
+            WriteFile(g_hDbFile, normalTail, tailBytes, &written, NULL);   // запис
         }
 
-        // 4: позначаємо стару комірку на диску Empty
+        // позначаємо стару комірку на диску Empty
         LARGE_INTEGER sourceOffset = CalculateOffset(realIdx, currentlyPinned);
-        SetFilePointerEx(hFileW, sourceOffset, NULL, FILE_BEGIN);
-        ClipEntry diskSourceEntry = sourceEntry;
+        SetFilePointerEx(g_hDbFile, sourceOffset, NULL, FILE_BEGIN);
         DWORD sourceSalt = (currentlyPinned ? 1000 : 0) + realIdx;
         SecureProcessBuffer((BYTE*)&diskSourceEntry, RAM_BLOCK_SIZE, sourceSalt, true);
-        WriteFile(hFileW, &diskSourceEntry, RAM_BLOCK_SIZE, &written, NULL);
-
-        CloseHandle(hFileW);
+        WriteFile(g_hDbFile, &diskSourceEntry, RAM_BLOCK_SIZE, &written, NULL);
     }
-
     if (normalTail) HeapFree(GetProcessHeap(), 0, normalTail);
 }
 
@@ -882,22 +860,18 @@ wchar_t* LoadTextByRealIndex(uint8_t index, bool isPinned) {
         memcpy(targetBuffer, localEntry.text, localEntry.textLength * sizeof(wchar_t));
     } 
     else if (localEntry.textflags & TextFlags::Normal) {
-        // варіант Б: Забираємо inline-частину (перші 1020 символів) з RAM
-        memcpy(targetBuffer, localEntry.text, 1020 * sizeof(wchar_t));
-        
-        // дочитуємо решту тексту ("хвіст") зі сховища за O(1)
-        HANDLE hFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
+        memcpy(targetBuffer, localEntry.text, 1020 * sizeof(wchar_t));   // варіант Б: Забираємо inline-частину (перші 1020 символів) з RAM
+            
+        if (g_hDbFile != INVALID_HANDLE_VALUE) {    // використовуємо глобальний дескриптор для дочитування хвоста
             LARGE_INTEGER offset = CalculateOffset(index, isPinned);
-            offset.QuadPart += RAM_BLOCK_SIZE; // стрибаємо повз 2 КБ картки прев'ю на початок хвоста
-            SetFilePointerEx(hFile, offset, NULL, FILE_BEGIN);
+            offset.QuadPart += RAM_BLOCK_SIZE;  // стрибаємо повз 2 КБ картки прев'ю на початок хвоста
+            SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
             
             DWORD bytesToRead = (localEntry.textLength - 1020) * sizeof(wchar_t);
             DWORD bytesRead;
-            ReadFile(hFile, targetBuffer + 1020, bytesToRead, &bytesRead, NULL);
+            ReadFile(g_hDbFile, targetBuffer + 1020, bytesToRead, &bytesRead, NULL);
             DWORD slotSalt = (isPinned ? 1000 : 0) + index;
-            SecureProcessBuffer((BYTE*)(targetBuffer + 1020), bytesRead, slotSalt, false); // знімаємо обфускацію з хвоста
-            CloseHandle(hFile);
+            SecureProcessBuffer((BYTE*)(targetBuffer + 1020), bytesRead, slotSalt, false);  // знімаємо обфускацію з хвоста
         }
     } 
     else if (localEntry.textflags & TextFlags::File) {
@@ -1809,8 +1783,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DESTROY: 
-            ManageTrayIcon(hwnd, NIM_DELETE); // видаляємо іконку з трею при закритті
-            RemoveClipboardFormatListener(hwnd); 
+            ManageTrayIcon(hwnd, NIM_DELETE);  // видаляємо іконку з трею при закритті
+            RemoveClipboardFormatListener(hwnd);
+       
+            if (g_hDbFile != INVALID_HANDLE_VALUE) {   // закриваємо глобальний дескриптор бази даних
+                CloseHandle(g_hDbFile);
+                g_hDbFile = INVALID_HANDLE_VALUE;
+            }
             PostQuitMessage(0);
             break;
 
@@ -1833,7 +1812,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     InitMaps(); 
     
-    LoadHistory(); 
+    LoadHistory();     // тут ініціюємо g_hDbFile і виділяється місце на диску
 
     HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
     if (hUser32) {
