@@ -136,8 +136,8 @@ enum class HotkeyCmd {
 };
 
 // =|=|= словники для зміни розкладки =|=|=
-wchar_t eng_to_ukr[65535]; 
-wchar_t ukr_to_eng[65535]; 
+wchar_t eng_to_ukr[65536]; 
+wchar_t ukr_to_eng[65536]; 
 
 // ініціюємо словник парами символів для перекладу англійська <-> українська
 void InitMaps() {
@@ -452,7 +452,6 @@ void SaveBlockToDisk(uint8_t index, bool isPinned, const wchar_t* fullText) {
 void RemoveByRealIndex_Internal(uint8_t index, bool isPinned) {
     ClipEntry& entry = isPinned ? pinnedBuffer[index] : unpinnedBuffer[index];
     if (!(entry.dataflags & DataFlags::Used)) {  // якщо запис уже порожній або затомбстонений — нічого не робимо
-        ReleaseSRWLockExclusive(&g_DataLock);  // відпускаємо лок перед виходом
         return; 
     }
 
@@ -482,7 +481,7 @@ void RemoveByRealIndex_Internal(uint8_t index, bool isPinned) {
 void RemoveByRealIndex(uint8_t index, bool isPinned) {
     AcquireSRWLockExclusive(&g_DataLock); // блокуємо дані
     RemoveByRealIndex_Internal(index, isPinned);
-    ReleaseSRWLockExclusive(&g_DataLock); // знімаємо блокування даних
+    ReleaseSRWLockExclusive(&g_DataLock);  // знімаємо блокування даних
 
     SaveBlockToDisk(index, isPinned, NULL); // зберігаємо оновлену затомбстонену картку на диск
 }
@@ -778,7 +777,7 @@ void AddToHistory(const wchar_t* text, uint16_t extraDataFlags = 0, uint16_t ext
 
 // функція відновлює індексну карту прев'ю після перезапуску
 void LoadHistory() {
-    g_hDbFile = CreateFileW(DB_FILE_NAME, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    g_hDbFile = CreateFileW(DB_FILE_NAME, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (g_hDbFile != INVALID_HANDLE_VALUE) {
 
         if (GetLastError() != ERROR_ALREADY_EXISTS) {   // попереднє виділення місця (Pre-allocation), якщо файл щойно створено
