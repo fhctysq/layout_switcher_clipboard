@@ -1424,7 +1424,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, hwnd, (HMENU)1, NULL, NULL);
             
             SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);    // перелік повідомлень з кастомним виглядом
-            SetWindowTheme(hListBox, L"Explorer", NULL);
+            SetWindowTheme(hListBox, L"", NULL);   // відмикаємо тему для кастомізації скролбара
 
             OldListBoxProc = (WNDPROC)SetWindowLongPtr(hListBox, GWLP_WNDPROC, (LONG_PTR)ListBoxSubclassProc);
             AddClipboardFormatListener(hwnd); // програма стає слухачем системного буфера обміну
@@ -1471,6 +1471,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return hit;
         }
 
+        case WM_CTLCOLORSCROLLBAR: {  // фарбуємо скролбар
+            HDC hdcScroll = (HDC)wParam;
+            SetBkColor(hdcScroll, RGB(40, 40, 40));
+            return (LRESULT)g_brMainBg;
+        }
         case WM_LBUTTONDOWN: { // клік по кнопці закриття "✕"
             POINT pt;
             pt.x = GET_X_LPARAM(lParam);
