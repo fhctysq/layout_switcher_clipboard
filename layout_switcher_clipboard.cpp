@@ -813,12 +813,13 @@ void LoadHistory() {
             pinnedHead = heads[1];
         }
 
-        for (int i = 0; i < 256; i++) {     // завантажуємо тільки індексні картки (по 2 КБ) для звичайних записів
+        for (int i = 0; i < 256; i++) {     // завантажуємо індексні картки (по 2 КБ) для звичайних записів
             LARGE_INTEGER offset = CalculateOffset(i, false);
             SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
             ClipEntry tempEntry; // тимчасова структура
             ReadFile(g_hDbFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
             if (read == RAM_BLOCK_SIZE) {
+                if (tempEntry.dataflags == 0 && tempEntry.textLength == 0) continue;   // пропускаємо порожні блоки
                 DWORD slotSalt = i;   // сіль — це індекс запису
                 SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
                 if (tempEntry.dataflags & DataFlags::Used) {       // тепер безпечно перевіряємо прапорець
@@ -826,12 +827,13 @@ void LoadHistory() {
                 }
             }
         }
-        for (int i = 0; i < 256; i++) {  // також тільки індексні картки (по 2 КБ) для закріплених записів
+        for (int i = 0; i < 256; i++) {  // також індексні картки (по 2 КБ) для закріплених записів
             LARGE_INTEGER offset = CalculateOffset(i, true);
             SetFilePointerEx(g_hDbFile, offset, NULL, FILE_BEGIN);
             ClipEntry tempEntry; 
             ReadFile(g_hDbFile, &tempEntry, RAM_BLOCK_SIZE, &read, NULL);
             if (read == RAM_BLOCK_SIZE) {
+                if (tempEntry.dataflags == 0 && tempEntry.textLength == 0) continue;   // пропускаємо порожні блоки
                 DWORD slotSalt = 1000 + i;  // сіль для isPinned
                 SecureProcessBuffer((BYTE*)&tempEntry, RAM_BLOCK_SIZE, slotSalt, false);  // спершу розшифровуємо
                 if (tempEntry.dataflags & DataFlags::Used) {
