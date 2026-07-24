@@ -1471,10 +1471,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return hit;
         }
 
-        case WM_CTLCOLORSCROLLBAR: {  // фарбуємо скролбар
+        case WM_CTLCOLORLISTBOX: {  // фарбуємо тло скролбара
+            HDC hdcList = (HDC)wParam;
+            SetBkColor(hdcList, RGB(25, 25, 25));
+            SetTextColor(hdcList, RGB(200, 200, 200));
+            return (LRESULT)g_brMainBg;
+        }
+        case WM_CTLCOLORSCROLLBAR: {
             HDC hdcScroll = (HDC)wParam;
             SetBkColor(hdcScroll, RGB(40, 40, 40));
-            return (LRESULT)g_brMainBg;
+            return (LRESULT)CreateSolidBrush(RGB(40, 40, 40));
         }
         case WM_LBUTTONDOWN: { // клік по кнопці закриття "✕"
             POINT pt;
