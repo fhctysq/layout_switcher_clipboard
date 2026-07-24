@@ -1424,7 +1424,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, hwnd, (HMENU)1, NULL, NULL);
             
             SendMessage(hListBox, WM_SETFONT, (WPARAM)g_hFont, TRUE);    // перелік повідомлень з кастомним виглядом
-            SetWindowTheme(hListBox, NULL, NULL);
+            SetWindowTheme(hListBox, L"Explorer", NULL);
 
             OldListBoxProc = (WNDPROC)SetWindowLongPtr(hListBox, GWLP_WNDPROC, (LONG_PTR)ListBoxSubclassProc);
             AddClipboardFormatListener(hwnd); // програма стає слухачем системного буфера обміну
