@@ -135,9 +135,12 @@ enum class HotkeyCmd {
     PinCopy = 13, PinCut = 14, PinPaste = 15, TogglePinCurrent = 16  // команди для роботи із закріпленими в буфері
 };
 
-// =|=|= словники для зміни розкладки =|=|=
-wchar_t eng_to_ukr[65536]; 
-wchar_t ukr_to_eng[65536]; 
+// // =|=|= словники для зміни розкладки =|=|=
+// wchar_t eng_to_ukr[65536]; 
+// wchar_t ukr_to_eng[65536]; 
+
+wchar_t eng_to_ukr[128] = { 0 };  // ASCII охоплює всі англійські літери та базову пунктуацію (0..127)
+wchar_t ukr_to_eng[2048] = { 0 };  // масиву на 2048 елементів достатньо за умови бітхешу
 
 // ініціюємо словник парами символів для перекладу англійська <-> українська
 void InitMaps() {
@@ -161,8 +164,12 @@ void InitMaps() {
     };
     int count = sizeof(pairs) / sizeof(pairs[0]); // рахуємо кількість пар, щоб знати, скільки елементів обробити
     for (int i = 0; i < count; ++i) {  // пробігаємо циклом по переліку
-        eng_to_ukr[pairs[i][0]] = pairs[i][1];
-        ukr_to_eng[pairs[i][1]] = pairs[i][0];
+        wchar_t eng = pairs[i][0];
+        wchar_t ukr = pairs[i][1];
+        
+        if (eng < 128) eng_to_ukr[eng] = ukr;
+
+        ukr_to_eng[ukr & 2047] = eng;   // відмасковуємо молодші 11 біт для отримання індексу без колізій
     }
 }
 
@@ -1146,21 +1153,37 @@ void TransformClipboardText(TransformMode mode) {
                         pNewText[j] = L'\0';  // нуль-термінатор в кінці рядка
                     } 
                     else {   // зміна розкладки та регістру
+                        bool lastWasEng = true;  // дефолним контекстом беремо англійську
                         for (size_t i = 0; i < len; ++i) {
                             wchar_t ch = pText[i];  // копіюємо кожен поточний символ
                             if (mode == TransformMode::Layout) {
-                                if (eng_to_ukr[ch]) { pNewText[i] = eng_to_ukr[ch]; changed = true; toUkrCount++; } // англ -> укр
-                                else if (ukr_to_eng[ch]) { pNewText[i] = ukr_to_eng[ch]; changed = true; toEngCount++; } // укр -> англ
-                                else { pNewText[i] = ch; } // цифри, пробіли
+                                wchar_t e = (ch < 128) ? eng_to_ukr[ch] : 0; // отримуємо переклади (для ASCII — з таблиці, інакше 0)
+                                wchar_t u = ukr_to_eng[ch & 2047];
+
+                                if (e && u) {  // символ присутній в обох таблицях (крапка, кома, апостроф тощо)
+                                    if (lastWasEng) { pNewText[i] = e; toUkrCount++;}
+                                    else { pNewText[i] = u; toEngCount++; }
+                                    changed = true;
+                                } else if (e) {  // однозначно англ -> укр
+                                    pNewText[i] = e;
+                                    lastWasEng = true;  // фіксуємо поточну мову слова як англійську
+                                    changed = true;
+                                    toUkrCount++;
+                                } else if (u) {   // однозначно укр -> англ
+                                    pNewText[i] = u;
+                                    lastWasEng = false; // фіксуємо поточну мову слова як українську
+                                    changed = true;
+                                    toEngCount++;
+                                } else { pNewText[i] = ch; } // цифри, пробіли
                             } else if (mode == TransformMode::Case) { // інверсія регістру
                                 WCHAR c = ch;
                                 if (IsCharUpperW(c)) { 
-                                    CharLowerBuffW(&c, 1); 
+                                    CharLowerBuffW(&c, 1); // перетворення в нижній регістр
                                     pNewText[i] = c; 
                                     changed = true; 
                                 }
                                 else if (IsCharLowerW(c)) { 
-                                    CharUpperBuffW(&c, 1); 
+                                    CharUpperBuffW(&c, 1);  // перетворення у верхній регістр
                                     pNewText[i] = c; 
                                     changed = true; 
                                 }
