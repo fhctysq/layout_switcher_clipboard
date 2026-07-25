@@ -40,7 +40,7 @@ AppSettings g_Config; // глобальний об'єкт конфігураці
 #define LARGE_TEXT_THRESHOLD (16 * 1024) // якщо скопіювали більше 16 КБ за раз — скидаємо у файл
 #define DISK_BLOCK_SIZE 16384 // 16 КБ блок на диску
 #define RAM_BLOCK_SIZE 2048   // 2 КБ розмір структури в RAM
-#define USER_KEY L"MySecretKey2026"  // пароль для генерації SHA-256 ключа під AES-256 криптографічне шифрування
+wchar_t g_UserKey[256] = L"MySecretKey2026";  // пароль для генерації SHA-256 ключа під AES-256 криптографічне шифрування
 
 #define DB_FILE_NAME L"custom_clipboard.bin"
 #define DB_FOLDER_NAME L"ClipboardData"
@@ -221,7 +221,7 @@ void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
     if (NT_SUCCESS(BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0))) {
         if (NT_SUCCESS(BCryptCreateHash(hHashAlg, &hHash, NULL, 0, NULL, 0, 0))) {
             
-            BCryptHashData(hHash, (PUCHAR)USER_KEY, lstrlenW(USER_KEY) * sizeof(wchar_t), 0); // додаємо пароль до хешу
+            BCryptHashData(hHash, (PUCHAR)g_UserKey, lstrlenW(g_UserKey) * sizeof(wchar_t), 0); // додаємо пароль до хешу
             BCryptHashData(hHash, (PUCHAR)&salt, sizeof(salt), 0);    // додаємо сіль (індекс комірки або час)
             
             BCryptFinishHash(hHash, key, sizeof(key), 0);   // отримуємо 32-байтний криптографічний ключ
