@@ -720,6 +720,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     return 1; // блокуємо подію: Win/Alt не дійдуть до ОС
                 }
             }
+            static bool pauseHandled = false; // запобігає спаму повідомлень при утримуванні клавіші pause
             if (pKeyBoard->vkCode == VK_PAUSE) {
                 if (isKeyDown) {
                     if (!pauseHandled) { // захист від повторних повідомлень при утриманні клавіші
@@ -734,8 +735,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     }
                     return 1;
                 } 
-                else if (isKeyUp) {
-                    pauseHandled = false; // скидаємо прапорець при відпусканні клавіші
+                else if (isKeyUp) { pauseHandled = false; // скидаємо прапорець при відпусканні клавіші
                 }
             }
             // перевіряємо, чи затиснута будь-яка з клавіш Windows
