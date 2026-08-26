@@ -5,6 +5,7 @@
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "comctl32.lib")
 
 #include <windows.h> // Windows API
 #include <windowsx.h> // macro APIs and control APIs
@@ -14,6 +15,7 @@
 #include <strsafe.h> // Windows SDK designed to prevent security vulnerabilities
 #include <cstdint>  // для uint
 #include <wchar.h>  // для wmemcpy
+#include <commctrl.h> // для налаштувань
 
 #ifndef NT_SUCCESS  // макрос перевірки успішності функцій CNG (щоб не підмикати важкий ntstatus.h)
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -31,6 +33,37 @@ struct AppSettings {
     int bottomHeight = 32;     // висота нижньої смужки для перетягування
 };
 AppSettings g_Config; // глобальний об'єкт конфігурації
+
+// структура для опису та зв'язку елементів керування з AppSettings
+struct SettingDef {
+    const wchar_t* name; // візуальна назва параметра
+    int* pVal;           // вказівник на поле в глобальному g_Config
+    int minVal;          // мінімальне значення для повзунка
+    int maxVal;          // максимальне значення
+    int defVal;          // значення за замовчуванням (для Reset)
+    HWND hSlider;        // дескриптор створеного Trackbar
+    HWND hStaticName;    // дескриптор тексту з назвою
+    HWND hStaticVal;     // дескриптор тексту з поточним значенням
+};
+
+// мапа параметрів (7 числових значень конфігурації)
+SettingDef g_Sliders[] = {
+    { L"Ширина вікна", &g_Config.winWidth, 400, 1000, 560, NULL, NULL, NULL },
+    { L"Висота вікна", &g_Config.winHeight, 400, 1200, 704, NULL, NULL, NULL },
+    { L"Висота картки тексту", &g_Config.itemHeight, 50, 180, 90, NULL, NULL, NULL },
+    { L"Відступ між картками", &g_Config.itemGap, 0, 30, 8, NULL, NULL, NULL },
+    { L"Радіус кутів (вікна/картки)", &g_Config.cornerRadius, 0, 50, 20, NULL, NULL, NULL },
+    { L"Висота верхньої шапки", &g_Config.headerHeight, 20, 60, 32, NULL, NULL, NULL },
+    { L"Висота нижнього футера", &g_Config.bottomHeight, 20, 60, 32, NULL, NULL, NULL }
+};
+const int g_NumSliders = sizeof(g_Sliders) / sizeof(g_Sliders[0]);
+
+// дескриптори елементів для поля введення пароля та кнопок футера
+HWND hPasswordEdit = NULL;
+HWND hPwdLabelName = NULL;
+HWND hPwdLabelWarning = NULL;
+HWND hSaveSettingsBtn = NULL;
+HWND hResetSettingsBtn = NULL;
 
 // =|=|= налаштування трею та іконки =|=|=
 #define WM_TRAYICON (WM_APP + 2) // кастомне повідомлення для обробки кліків у треї
@@ -85,6 +118,60 @@ struct ClipEntry {
     };
 };
 #pragma pack(pop)
+
+void SaveSettings() { // записує поточну конфігурацію g_Config та пароль g_UserKey у INI-файл (UTF-16LE)
+    // створює або атомарно перезаписує clipboard_settings.ini у робочій папці
+    HANDLE hFile = CreateFileW(L"clipboard_settings.ini", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        wchar_t buffer[2048] = { 0 };
+        StringCchPrintfW(buffer, ARRAYSIZE(buffer),  // серіалізація параметрів у текстовий формат "ключ=значення"
+            L"winWidth=%d\r\nwinHeight=%d\r\nitemHeight=%d\r\nitemGap=%d\r\ncornerRadius=%d\r\nheaderHeight=%d\r\nbottomHeight=%d\r\nuserKey=%s\r\n",
+            g_Config.winWidth, g_Config.winHeight, g_Config.itemHeight,
+            g_Config.itemGap, g_Config.cornerRadius, g_Config.headerHeight,
+            g_Config.bottomHeight, g_UserKey);
+        
+        DWORD written;
+        WriteFile(hFile, buffer, (DWORD)(lstrlenW(buffer) * sizeof(wchar_t)), &written, NULL);
+        CloseHandle(hFile);  // звільнення файлового дескриптора
+    }
+}
+
+void LoadSettings() {  // завантажує налаштування з INI-файлу до (!) ініціалізації бази даних (BCrypt-дешифрування)
+    HANDLE hFile = CreateFileW(L"clipboard_settings.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        DWORD size = GetFileSize(hFile, NULL);
+        if (size > 0 && size < 4096) {  // захист від завантаження порожніх або пошкоджених файлів понад 4 КБ
+            wchar_t* buffer = (wchar_t*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size + sizeof(wchar_t));
+            if (buffer) {
+                DWORD read;
+                ReadFile(hFile, buffer, size, &read, NULL);
+                
+                wchar_t* context = NULL;  // рядковий парсинг роздільників \r\n та знаків =
+                wchar_t* line = wcstok_s(buffer, L"\r\n", &context);
+                while (line) {
+                    wchar_t* sep = wcschr(line, L'=');
+                    if (sep) {
+                        *sep = L'\0';     // спліт рядка у місці роздільника
+                        wchar_t* key = line;
+                        wchar_t* val = sep + 1;
+                        
+                        if (wcscmp(key, L"winWidth") == 0) g_Config.winWidth = _wtoi(val);  // десеріалізація значень у поля g_Config та g_UserKey
+                        else if (wcscmp(key, L"winHeight") == 0) g_Config.winHeight = _wtoi(val);
+                        else if (wcscmp(key, L"itemHeight") == 0) g_Config.itemHeight = _wtoi(val);
+                        else if (wcscmp(key, L"itemGap") == 0) g_Config.itemGap = _wtoi(val);
+                        else if (wcscmp(key, L"cornerRadius") == 0) g_Config.cornerRadius = _wtoi(val);
+                        else if (wcscmp(key, L"headerHeight") == 0) g_Config.headerHeight = _wtoi(val);
+                        else if (wcscmp(key, L"bottomHeight") == 0) g_Config.bottomHeight = _wtoi(val);
+                        else if (wcscmp(key, L"userKey") == 0) StringCchCopyW(g_UserKey, ARRAYSIZE(g_UserKey), val);
+                    }
+                    line = wcstok_s(NULL, L"\r\n", &context);
+                }
+                HeapFree(GetProcessHeap(), 0, buffer); // звільнення буфера купи
+            }
+        }
+        CloseHandle(hFile);
+    }
+}
 
 // гарантія правильної математики пам'яті (компілятор видасть помилку, якщо розмір не 2 КБ)
 static_assert(sizeof(ClipEntry) == RAM_BLOCK_SIZE, "ClipEntry layout size miscalculation!");
@@ -221,7 +308,7 @@ void SecureProcessBuffer(BYTE* buffer, ULONG size, DWORD salt, bool isEncrypt) {
     if (NT_SUCCESS(BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0))) {
         if (NT_SUCCESS(BCryptCreateHash(hHashAlg, &hHash, NULL, 0, NULL, 0, 0))) {
             
-            BCryptHashData(hHash, (PUCHAR)g_UserKey, lstrlenW(g_UserKey) * sizeof(wchar_t), 0); // додаємо пароль до хешу
+            BCryptHashData(hHash, (PUCHAR)g_UserKey, (ULONG)(lstrlenW(g_UserKey) * sizeof(wchar_t)), 0); // додаємо динамічний пароль до хешу
             BCryptHashData(hHash, (PUCHAR)&salt, sizeof(salt), 0);    // додаємо сіль (індекс комірки або час)
             
             BCryptFinishHash(hHash, key, sizeof(key), 0);   // отримуємо 32-байтний криптографічний ключ
@@ -634,14 +721,22 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 }
             }
             if (pKeyBoard->vkCode == VK_PAUSE) {
-                if (isRightAltPressed) return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
-                
-                if (isLeftAltPressed) { 
-                    CancelWindowsMenuFocus(); 
-                    PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Case), 0); 
+                if (isKeyDown) {
+                    if (!pauseHandled) { // захист від повторних повідомлень при утриманні клавіші
+                        pauseHandled = true;
+                        if (isRightAltPressed) return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+            
+                        if (isLeftAltPressed) { 
+                            CancelWindowsMenuFocus(); 
+                            PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Case), 0); 
+                        } 
+                        else PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0); 
+                    }
+                    return 1;
                 } 
-                else PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0);                  
-                return 1;
+                else if (isKeyUp) {
+                    pauseHandled = false; // скидаємо прапорець при відпусканні клавіші
+                }
             }
             // перевіряємо, чи затиснута будь-яка з клавіш Windows
             bool isWinPressed = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
@@ -1201,38 +1296,36 @@ void TransformClipboardText(TransformMode mode) {
                         if (mode == TransformMode::Layout) { // якщо це була саме розкладка
                             HKL targetHKL = NULL; // дескриптор цільової мови
                             if (toUkrCount > toEngCount) { // якщо більшість символів стали українськими
-                                targetHKL = LoadKeyboardLayoutW(L"00020422", KLF_ACTIVATE); // 0422 - код української розкладки
+                                targetHKL = LoadKeyboardLayoutW(L"00020422", KLF_ACTIVATE); // 20422 - код української розкладки
                             } else if (toEngCount > toUkrCount) { // якщо переважає англійська
                                 targetHKL = LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE); // 0409 - код англійської розкладки США
                             }
                             if (targetHKL) { // якщо мова встановлена в системі
-                                // просимо активне вікно змінити мову введення
-                                PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)targetHKL); 
+                                PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)targetHKL);  // просимо активне вікно змінити мову введення
                             }
                         }
-                        if (!EmptyClipboard()) {  // очищуємо буфер обміну
-                            GlobalFree(hNewData); // знищуємо новий рядок, бо ОС відмовилась його прийняти
-                            GlobalUnlock(hData);  // розблоковуємо оригінальний буфер
-                            CloseClipboard();     // закриваємо сесію
-                            goto cleanup;         // і виходимо, щоб не натиснути Ctrl+V (SendKeyCombo)
-                        }
+                        GlobalUnlock(hData);  // розблоковуємо вхідний hData перед (!) EmptyClipboard (системний буфер)
+                        EmptyClipboard();  // очищуємо буфер обміну
+
                         SetClipboardData(CF_UNICODETEXT, hNewData);  // віддаємо ОС блок даних
-                        GlobalUnlock(hData);  // розблоковуємо системний буфер обміну
                         CloseClipboard();  // закриваємо сесію Clipboard API
 
-                        SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V тільки якщо буфер оновлено
-                        Sleep(80); 
-                        goto cleanup;   // стрибаємо на фінальне очищення
+                        SendKeyCombo(VK_CONTROL, 0x56);  // імітуємо Ctrl+V  якщо буфер оновлено
+                        Sleep(80);
+                        
+                        // не викликаємо RestoreSysClipboard при успіху. очищуємо лише бекап у пам'яті.
+                        if (g_SysClipboardBackup) { HeapFree(GetProcessHeap(), 0, g_SysClipboardBackup); g_SysClipboardBackup = NULL; }
+                        ClearPendingClipboardUpdates();
+                        ignoreClipboardUpdate = false;
+                        return;
                     } else { GlobalFree(hNewData); }  // якщо змін не було — знищуємо виділену пам'ять
                 }
             }
-            GlobalUnlock(hData);  // знімаємо блок
+            GlobalUnlock(hData);  // знімаємо блок hData, якщо змін не було
         }
         CloseClipboard();
     }
-
-cleanup:
-    RestoreSysClipboard();  // повертаємо стан системного буфера
+    RestoreSysClipboard();  // повертаємо стан системного буфера якщо перетворення провалилося
     ClearPendingClipboardUpdates();  // чистимо чергу повідомлень ОС
     ignoreClipboardUpdate = false;  // повертаємо хук буфера
 }
@@ -1387,26 +1480,217 @@ void ManageTrayIcon(HWND hwnd, DWORD dwMessage) {
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), L"Кастомний Буфер Обміну");
     Shell_NotifyIconW(dwMessage, &nid);
 }
+
+void UpdateLiveLayout() {
+    HDC hdc = GetDC(NULL);
+    int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    ReleaseDC(NULL, hdc);
+    g_ScaledItemHeight = MulDiv(g_Config.itemHeight, dpiY, 96);
+
+    // миттєво оновлюємо заокруглені форми кутів для обох вікон на льоту
+    ApplyWindowShape(hMainWindow);
+    ApplyWindowShape(hSettingsWindow);
+
+    // зміна геометрії головного вікна буфера та його внутрішнього ListBox
+    SetWindowPos(hMainWindow, NULL, 0, 0, g_Config.winWidth, g_Config.winHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    MoveWindow(hListBox, 0, g_Config.headerHeight, g_Config.winWidth, g_Config.winHeight - g_Config.headerHeight - g_Config.bottomHeight, TRUE);
+    
+    // перебудова внутрішніх індексів висоти елементів у ListBox
+    RECT rc; GetWindowRect(hListBox, &rc);
+    SetWindowPos(hListBox, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    
+    // перемальовуємо графіку інтерфейсів
+    InvalidateRect(hMainWindow, NULL, TRUE);
+    InvalidateRect(hSettingsWindow, NULL, TRUE);
+}
+
+void RepositionSettingsControls(HWND hwnd) {
+    int cardHeight = 62;
+    int cardGap = 8;
+    int startY = g_Config.headerHeight + 12;
+    
+    // позиціонування 7 числових карток з повзунками
+    for (int i = 0; i < g_NumSliders; i++) {
+        int y = startY + i * (cardHeight + cardGap);
+        MoveWindow(g_Sliders[i].hStaticName, 24, y + 20, 170, 20, TRUE);
+        MoveWindow(g_Sliders[i].hSlider, 200, y + 16, g_Config.winWidth - 265, 30, TRUE);
+        MoveWindow(g_Sliders[i].hStaticVal, g_Config.winWidth - 55, y + 20, 35, 20, TRUE);
+    }
+
+    // позиціонування картки пароля (8-ма за рахунком комірка)
+    int pwdY = startY + g_NumSliders * (cardHeight + cardGap);
+    MoveWindow(hPwdLabelName, 24, pwdY + 12, 170, 20, TRUE);
+    MoveWindow(hPasswordEdit, 200, pwdY + 10, g_Config.winWidth - 235, 24, TRUE);
+    MoveWindow(hPwdLabelWarning, 24, pwdY + 38, g_Config.winWidth - 48, 20, TRUE);
+
+    // кнопки збереження/скидання у нижньому футері вікна
+    int btnY = g_Config.winHeight - g_Config.bottomHeight - 42;
+    MoveWindow(hSaveSettingsBtn, g_Config.winWidth / 2 - 115, btnY, 105, 32, TRUE);
+    MoveWindow(hResetSettingsBtn, g_Config.winWidth / 2 + 10, btnY, 105, 32, TRUE);
+}
+
 // =|=|= обробник вікна налаштувань (Settings Skeleton) =|=|=
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_CREATE:
-            // Тут ти пізніше створиш UI елементи (кнопки, поля введення, повзунки)
+        case WM_CREATE: {
+            // створення дочірніх контролів (повзунки Trackbar, Статики, Поле введення)
+            for (int i = 0; i < g_NumSliders; i++) {
+                g_Sliders[i].hStaticName = CreateWindowExW(0, L"STATIC", g_Sliders[i].name,
+                    WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, NULL, NULL, NULL);
+                
+                g_Sliders[i].hSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+                    WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS, 0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)(100 + i), NULL, NULL);
+                
+                SendMessageW(g_Sliders[i].hSlider, TBM_SETRANGE, TRUE, MAKELPARAM(g_Sliders[i].minVal, g_Sliders[i].maxVal));
+                SendMessageW(g_Sliders[i].hSlider, TBM_SETPOS, TRUE, *(g_Sliders[i].pVal));
+
+                wchar_t valStr[16];
+                StringCchPrintfW(valStr, ARRAYSIZE(valStr), L"%d", *(g_Sliders[i].pVal));
+                g_Sliders[i].hStaticVal = CreateWindowExW(0, L"STATIC", valStr,
+                    WS_CHILD | WS_VISIBLE | SS_RIGHT, 0, 0, 0, 0, hwnd, NULL, NULL, NULL);
+            }
+
+            // елементи секції шифрування
+            hPwdLabelName = CreateWindowExW(0, L"STATIC", L"Пароль AES-256:",
+                WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, NULL, NULL, NULL);
+            
+            hPasswordEdit = CreateWindowExW(0, L"EDIT", g_UserKey,
+                WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL, 0, 0, 0, 0, hwnd, (HMENU)200, NULL, NULL);
+
+            hPwdLabelWarning = CreateWindowExW(0, L"STATIC", L"⚠ Зміна пароля зламає читання поточної бази даних на диску!",
+                WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, NULL, NULL, NULL);
+
+            // управління конфігурацією
+            hSaveSettingsBtn = CreateWindowExW(0, L"BUTTON", L"Зберегти",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, (HMENU)301, NULL, NULL);
+
+            hResetSettingsBtn = CreateWindowExW(0, L"BUTTON", L"Скинути",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd, (HMENU)302, NULL, NULL);
+
+            RepositionSettingsControls(hwnd);
             break;
+        }
+        case WM_HSCROLL: {
+            // Live Preview: ловимо рух будь-якого з 7 повзунків
+            for (int i = 0; i < g_NumSliders; i++) {
+                if ((HWND)lParam == g_Sliders[i].hSlider) {
+                    int pos = (int)SendMessageW(g_Sliders[i].hSlider, TBM_GETPOS, 0, 0);
+                    *(g_Sliders[i].pVal) = pos; // оновлюємо глобальну структуру g_Config на льоту
+                    
+                    wchar_t valStr[16];
+                    StringCchPrintfW(valStr, ARRAYSIZE(valStr), L"%d", pos);
+                    SetWindowTextW(g_Sliders[i].hStaticVal, valStr);
+                    
+                    UpdateLiveLayout(); // оновлюємо обидва вікна
+                    RepositionSettingsControls(hwnd); // перераховуємо поточне вікно
+                    break;
+                }
+            }
+            break;
+        }
+        case WM_COMMAND: {
+            // зміна пароля користувачем у полі введення
+            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 200) {
+                GetWindowTextW(hPasswordEdit, g_UserKey, ARRAYSIZE(g_UserKey));
+            }
+            // кнопка "Зберегти"
+            if (LOWORD(wParam) == 301) {
+                SaveSettings();
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            // кнопка "Скинути" до заводських значень конфігурації
+            if (LOWORD(wParam) == 302) {
+                for (int i = 0; i < g_NumSliders; i++) {
+                    *(g_Sliders[i].pVal) = g_Sliders[i].defVal;
+                    SendMessageW(g_Sliders[i].hSlider, TBM_SETPOS, TRUE, g_Sliders[i].defVal);
+                    wchar_t valStr[16];
+                    StringCchPrintfW(valStr, ARRAYSIZE(valStr), L"%d", g_Sliders[i].defVal);
+                    SetWindowTextW(g_Sliders[i].hStaticVal, valStr);
+                }
+                StringCchCopyW(g_UserKey, ARRAYSIZE(g_UserKey), L"MySecretKey2026");
+                SetWindowTextW(hPasswordEdit, g_UserKey);
+                UpdateLiveLayout();
+                RepositionSettingsControls(hwnd);
+            }
+            break;
+        }
+        case WM_CTLCOLORSTATIC: {
+            // фарбування Static-текстів під Dark Theme головного вікна
+            HDC hdc = (HDC)wParam;
+            SetBkMode(hdc, TRANSPARENT);
+            if ((HWND)lParam == hPwdLabelWarning) {
+                SetTextColor(hdc, RGB(235, 130, 40)); // виділяємо попередження помаранчевим
+            } else {
+                SetTextColor(hdc, RGB(210, 210, 210));
+            }
+            return (LRESULT)g_brMainBg;
+        }
+        case WM_NCHITTEST: {
+            // дозволяємо перетягування POPUP вікна за шапку та футер
+            LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
+            if (hit == HTCLIENT) {
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ScreenToClient(hwnd, &pt);
+                if (pt.y < g_Config.headerHeight) {
+                    if (pt.x >= g_Config.winWidth - g_Config.headerHeight) return HTCLIENT;
+                    return HTCAPTION;
+                }
+                if (pt.y > g_Config.winHeight - g_Config.bottomHeight) return HTCAPTION;
+            }
+            return hit;
+        }
+        case WM_LBUTTONDOWN: {
+            // обробка кліка по кнопці ✕ закриття вікна налаштувань
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            if (pt.y < g_Config.headerHeight && pt.x >= g_Config.winWidth - g_Config.headerHeight) {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            break;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             FillRect(hdc, &ps.rcPaint, g_brMainBg);
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(200, 200, 200));
             SelectObject(hdc, g_hFont);
-            RECT rc = {20, 20, 400, 100};
-            DrawTextW(hdc, L"Вікно налаштувань (в розробці...)", -1, &rc, DT_LEFT | DT_TOP);
+
+            int cardHeight = 62;
+            int cardGap = 8;
+            int startY = g_Config.headerHeight + 12;
+            
+            // малюємо RoundRect-картки під елементи інтерфейсу для 100% відповідності головному вікну
+            for (int i = 0; i < g_NumSliders + 1; i++) {
+                int y = startY + i * (cardHeight + cardGap);
+                RECT cardRect = { g_Config.itemGap, y, g_Config.winWidth - g_Config.itemGap, y + cardHeight };
+                
+                HGDIOBJ oldBrush = SelectObject(hdc, g_brCardNormal);
+                HGDIOBJ oldPen = SelectObject(hdc, g_penCardNormal);
+                RoundRect(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, g_Config.cornerRadius, g_Config.cornerRadius);
+                SelectObject(hdc, oldBrush);
+                SelectObject(hdc, oldPen);
+            }
+
+            // рендер верхнього тексту заголовка шапки
+            RECT rcHeader = { 0, 0, g_Config.winWidth - g_Config.headerHeight, g_Config.headerHeight };
+            SetTextColor(hdc, RGB(130, 130, 130));
+            DrawTextW(hdc, L"  ⚙ Налаштування утиліти (Esc — приховати)", -1, &rcHeader, DT_SINGLELINE | DT_VCENTER);
+
+            // рендер хрестика ✕
+            RECT rcClose = { g_Config.winWidth - g_Config.headerHeight, 0, g_Config.winWidth, g_Config.headerHeight };
+            SetTextColor(hdc, RGB(220, 110, 110));
+            DrawTextW(hdc, L"✕", -1, &rcClose, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            
             EndPaint(hwnd, &ps);
             return 0;
         }
+        case WM_KEYDOWN:
+            if (wParam == VK_ESCAPE) { // закриття вікна по кнопці Escape
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
+            break;
         case WM_CLOSE:
-            ShowWindow(hwnd, SW_HIDE); // лише ховаємо, не знищуємо
+            ShowWindow(hwnd, SW_HIDE);
             return 0;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
@@ -1443,9 +1727,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 DestroyMenu(hMenu);
                 
                 if (cmd == 1) SendMessage(hwnd, WM_CLOSE, 0, 0);
-                else if (cmd == 2) {
-                    // показуємо вікно налаштувань по центру екрану
-                    SetWindowPos(hSettingsWindow, HWND_TOP, 0, 0, 400, 300, SWP_NOMOVE | SWP_SHOWWINDOW);
+                else if (cmd == 2) {    // вікно налаштувань
+                    // Отримуємо робочу область монітора, щоб відцентрувати POPUP вікно на екрані
+                    RECT workArea;
+                    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+                    int scrW = workArea.right - workArea.left;
+                    int scrH = workArea.bottom - workArea.top;
+                    int x = workArea.left + (scrW - g_Config.winWidth) / 2;
+                    int y = workArea.top + (scrH - g_Config.winHeight) / 2;
+    
+                    UpdateLiveLayout();  // форсуємо синхронізацію та перебудову об'єктів перед відображенням
+                    RepositionSettingsControls(hSettingsWindow);
+    
+                    SetWindowPos(hSettingsWindow, HWND_TOPMOST, x, y, g_Config.winWidth, g_Config.winHeight, SWP_SHOWWINDOW);
+                    SetForegroundWindow(hSettingsWindow);
                 }
             } else if (lParam == WM_LBUTTONUP) { // клік для відображення віконця
                 ShowClipboardUI(false, true); // передаємо прапорець fromTray
@@ -1851,6 +2146,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0; // завершуємо цей екземпляр
     }
 
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_BAR_CLASSES; // реєстрація класу контролу повзунків (Trackbar)
+    InitCommonControlsEx(&icex);
+
+    LoadSettings(); // читаємо файл конфігурації СУВОРО ДО завантаження історії, бо ключ g_UserKey потрібен для її дешифрування
+
     InitMaps(); 
     
     LoadHistory();     // тут ініціюємо g_hDbFile і виділяється місце на диску
@@ -1887,9 +2189,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     RegisterClass(&wcSet);
     
     // створюємо вікно налаштувань, але залишаємо його прихованим
-    hSettingsWindow = CreateWindowEx(WS_EX_APPWINDOW, L"CustomClipboardSettings", L"Налаштування",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 
-        CW_USEDEFAULT, CW_USEDEFAULT, 400, 300, NULL, NULL, hInstance, NULL);
+    hSettingsWindow = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"CustomClipboardSettings", L"Налаштування",
+        WS_POPUP, 0, 0, g_Config.winWidth, g_Config.winHeight, NULL, NULL, hInstance, NULL);
     
     g_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
