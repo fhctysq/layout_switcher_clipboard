@@ -2134,7 +2134,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 // =|=|= вхід =|=|=
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
     // логіка м'ютексу (заборона множинних копій і реалізація Alt+Q як перемикача)
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Local\\LayoutClipboardMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {    // якщо утиліта вже працює — знаходимо її вікно і кажемо закрити
