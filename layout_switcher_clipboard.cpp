@@ -702,6 +702,21 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             }
         }
 
+        // Pause/Break: скидання pauseHandled має бути на KEYUP, поза блоком isKeyDown
+        static bool pauseHandled = false;
+        if (pKeyBoard->vkCode == VK_PAUSE) {
+            int cmd = 0;
+            int swallow = UpdatePauseHotkeyState(isKeyDown, isKeyUp, isLeftAltPressed, isRightAltPressed, pauseHandled, cmd);
+            if (cmd == static_cast<int>(HotkeyCmd::Case)) {
+                CancelWindowsMenuFocus();
+                PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Case), 0);
+            } else if (cmd == static_cast<int>(HotkeyCmd::Layout)) {
+                PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0);
+            }
+            if (swallow) return 1;
+            return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+        }
+
         if (isKeyDown) {
             // перевіряємо комбінацію Alt+Win або Win+Alt при відкритому вікні
             if (IsWindowVisible(hMainWindow)) {
@@ -718,24 +733,41 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     return 1; // блокуємо подію: Win/Alt не дійдуть до ОС
                 }
             }
-            static bool pauseHandled = false; // запобігає спаму повідомлень при утримуванні клавіші pause
-            if (pKeyBoard->vkCode == VK_PAUSE) {
-                if (isKeyDown) {
-                    if (!pauseHandled) { // захист від повторних повідомлень при утриманні клавіші
-                        pauseHandled = true;
-                        if (isRightAltPressed) return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+
+        // if (isKeyDown) {
+        //     // перевіряємо комбінацію Alt+Win або Win+Alt при відкритому вікні
+        //     if (IsWindowVisible(hMainWindow)) {
+        //         bool isWin = (pKeyBoard->vkCode == VK_LWIN || pKeyBoard->vkCode == VK_RWIN);
+        //         bool isAlt = (pKeyBoard->vkCode == VK_LMENU || pKeyBoard->vkCode == VK_RMENU);
+                
+        //         // якщо одна з них натиснута, а інша вже утримується фізично
+        //         if ((isWin && ((GetAsyncKeyState(VK_LMENU) & 0x8000) || (GetAsyncKeyState(VK_RMENU) & 0x8000))) ||
+        //             (isAlt && ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)))) 
+        //         {
+        //             CancelWindowsMenuFocus();  // скидаємо фокус системного меню Windows (фікс для Alt)
+        //             // кидаємо асинхронне завдання процесу вікна і повертаємо керування ОС
+        //             PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::TogglePinCurrent), 0);
+        //             return 1; // блокуємо подію: Win/Alt не дійдуть до ОС
+        //         }
+        //     }
+        //     static bool pauseHandled = false; // запобігає спаму повідомлень при утримуванні клавіші pause
+        //     if (pKeyBoard->vkCode == VK_PAUSE) {
+        //         if (isKeyDown) {
+        //             if (!pauseHandled) { // захист від повторних повідомлень при утриманні клавіші
+        //                 pauseHandled = true;
+        //                 if (isRightAltPressed) return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
             
-                        if (isLeftAltPressed) { 
-                            CancelWindowsMenuFocus(); 
-                            PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Case), 0); 
-                        } 
-                        else PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0); 
-                    }
-                    return 1;
-                } 
-                else if (isKeyUp) { pauseHandled = false; // скидаємо прапорець при відпусканні клавіші
-                }
-            }
+        //                 if (isLeftAltPressed) { 
+        //                     CancelWindowsMenuFocus(); 
+        //                     PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Case), 0); 
+        //                 } 
+        //                 else PostMessage(hMainWindow, MSG_PROCESS_HOTKEY, static_cast<WPARAM>(HotkeyCmd::Layout), 0); 
+        //             }
+        //             return 1;
+        //         } 
+        //         else if (isKeyUp) { pauseHandled = false; // скидаємо прапорець при відпусканні клавіші
+        //         }
+        //     }
             // перевіряємо, чи затиснута будь-яка з клавіш Windows
             bool isWinPressed = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
             // глобальні суперкомбінації (затиснуті Alt і Win)
