@@ -674,6 +674,26 @@ void CancelWindowsMenuFocus() {
     SendInput(2, in, sizeof(INPUT));
 }
 
+// Pause/Break hotkey debounce. Returns 1 if the hook should swallow the event.
+// outCmd is set to HotkeyCmd::Layout (1) or HotkeyCmd::Case (9) when a command should fire.
+inline int UpdatePauseHotkeyState(bool isKeyDown, bool isKeyUp, bool isLeftAlt, bool isRightAlt,
+                                  bool& pauseHandled, int& outCmd) {
+    outCmd = 0;
+    if (isKeyDown) {
+        if (!pauseHandled) {
+            pauseHandled = true;
+            if (isRightAlt) return 0;
+            outCmd = isLeftAlt ? 9 : 1; // HotkeyCmd::Case : HotkeyCmd::Layout
+        }
+        return 1;
+    }
+    if (isKeyUp) {
+        pauseHandled = false;
+        return 1;
+    }
+    return 0;
+}
+
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam;
